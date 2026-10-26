@@ -1,0 +1,5 @@
+/modeltruth
+/modeltruth.exe
+/dist/
+*.test
+*.out
