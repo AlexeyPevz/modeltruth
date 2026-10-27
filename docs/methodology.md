@@ -44,12 +44,14 @@ Layer 1 ships in v0. The others are in development.
 - **Environment must match.** A fingerprint taken behind a long system prompt
   differs from one taken on a clean request (see the pilot below). Reference and
   probe must use the same request shape.
-- **Errors are not evidence.** 429, 5xx and timeouts are recorded and excluded.
+- **Errors are not evidence.** 429, 5xx and timeouts are recorded and excluded;
+  a run in which no request succeeded reports `error`, never `pass` or `skip`.
 
 ## Layer 1 thresholds
 
-- `hidden_prompt`: the prompt `Reply with the single word: ok` is 30
-  characters; clean channels measured so far report 12–19 input tokens for it.
+- `hidden_prompt`: the prompt `Reply with the single word: <word>` is about 30
+  characters, with the word drawn per run from a fixed list of short words;
+  clean channels measured so far report 10–19 input tokens for it.
   Over 60 is a warning, over 300 is a failure. Relays that front subscription clients typically add
   4,000–8,000 tokens.
 - `channel_consistency`: identical prompts must not differ by more than 10% and
@@ -104,8 +106,9 @@ on one model a 600-character prompt reported as 10 input tokens.
 
 Publishing the method lets relays special-case it. Mitigations:
 
-- prompts are generated per run from templates (ranges, counts, languages,
-  ordering) with a recorded seed, and references are calibrated across variants;
+- layer 1 already draws its answer word per run; fingerprint prompts will be
+  generated per run from templates (ranges, counts, languages, ordering) with a
+  recorded seed, and references calibrated across variants;
 - cryptographic checks are not weakened by publication;
 - monitoring mode mixes probes into ordinary-looking traffic and randomizes timing.
 

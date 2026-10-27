@@ -27,7 +27,8 @@ modeltruth check --base-url https://relay.example.com --model claude-opus-5-5 --
 The key is read from an environment variable and is only sent to the endpoint
 under test. A run sends 6 short requests (`--repeats 3`).
 
-Exit codes: `0` no failed checks, `1` usage or runtime error, `2` at least one
+Exit codes: `0` no failed checks, `1` usage error or no request succeeded
+(verdict `error`, failed requests are listed in the report), `2` at least one
 check failed.
 
 ## What is checked today
@@ -57,13 +58,15 @@ the model itself.
 
 ## Trust model
 
-- The method is public. Concrete probe prompts are generated per run from
-  parameterized templates, so publishing the code does not hand relays a fixed
-  test to special-case.
+- The method is public. The word each probe asks the model to reply with is
+  drawn per run, so a relay cannot match one fixed probe string; every request
+  inside a run is identical so their sizes can be compared. Fully templated
+  prompts arrive with the fingerprint layers.
 - No reference, no accusation: a check that lacks reference data for the
   claimed model reports `skip`, never `fail`.
 - Transport and upstream errors (429, 5xx, timeouts) are never counted as
-  evidence of substitution.
+  evidence of substitution. They are reported, and a run in which no request
+  succeeded ends with verdict `error` instead of a silent pass.
 
 ## Prior art
 

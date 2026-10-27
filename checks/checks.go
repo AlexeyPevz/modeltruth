@@ -19,6 +19,8 @@ const (
 	StatusWarn Status = "warn"
 	StatusFail Status = "fail"
 	StatusSkip Status = "skip"
+	// StatusError means no request succeeded, so nothing was checked.
+	StatusError Status = "error"
 )
 
 // Finding is the result of one check with the evidence behind it.
@@ -31,9 +33,10 @@ type Finding struct {
 
 // Sample is one probe request and what came back.
 type Sample struct {
-	Probe    string
-	Response probe.Response
-	Err      error
+	Probe       string
+	PromptChars int
+	Response    probe.Response
+	Err         error
 }
 
 // Thresholds for the tiny prompt. A bare "Reply with the single word: ok"
@@ -67,6 +70,17 @@ func ok(samples []Sample, probeName string) []probe.Response {
 	return out
 }
 
+// promptChars is the prompt length of the first successful sample of a probe;
+// every request of one probe in a run carries the same prompt.
+func promptChars(samples []Sample, probeName string) int {
+	for _, s := range samples {
+		if s.Err == nil && s.Probe == probeName {
+			return s.PromptChars
+		}
+	}
+	return 0
+}
+
 func inputs(responses []probe.Response) []int64 {
 	out := make([]int64, len(responses))
 	for i, r := range responses {
@@ -93,11 +107,12 @@ func HiddenPrompt(samples []Sample) Finding {
 			inflated++
 		}
 	}
-	f.Evidence = map[string]any{"input_tokens": counts, "prompt_chars": len(tinyPromptText)}
+	chars := promptChars(samples, ProbeTiny)
+	f.Evidence = map[string]any{"input_tokens": counts, "prompt_chars": chars}
 	switch {
 	case maxInput > hiddenPromptFailTokens:
 		f.Status = StatusFail
-		f.Summary = fmt.Sprintf("a %d-character prompt was billed as up to %d input tokens in %d of %d requests: the endpoint adds a hidden prompt", len(tinyPromptText), maxInput, inflated, len(counts))
+		f.Summary = fmt.Sprintf("a %d-character prompt was billed as up to %d input tokens in %d of %d requests: the endpoint adds a hidden prompt", chars, maxInput, inflated, len(counts))
 	case maxInput > hiddenPromptWarnTokens:
 		f.Status = StatusWarn
 		f.Summary = fmt.Sprintf("tiny prompt billed as up to %d input tokens; expected under %d", maxInput, hiddenPromptWarnTokens)
@@ -151,9 +166,10 @@ func UsageSanity(samples []Sample) Finding {
 		f.Status, f.Summary = StatusSkip, "no successful medium-prompt responses"
 		return f
 	}
-	floor := int64(len(mediumPromptText) / usageFloorCharsPerToken)
+	chars := promptChars(samples, ProbeMedium)
+	floor := int64(chars / usageFloorCharsPerToken)
 	counts := inputs(responses)
-	f.Evidence = map[string]any{"input_tokens": counts, "input_floor": floor, "prompt_chars": len(mediumPromptText)}
+	f.Evidence = map[string]any{"input_tokens": counts, "input_floor": floor, "prompt_chars": chars}
 	var under []int64
 	missingOutput := 0
 	for _, r := range responses {
@@ -167,7 +183,7 @@ func UsageSanity(samples []Sample) Finding {
 	switch {
 	case len(under) > 0:
 		f.Status = StatusFail
-		f.Summary = fmt.Sprintf("a %d-character prompt was reported as %v input tokens, below the minimum of %d: usage is not real", len(mediumPromptText), under, floor)
+		f.Summary = fmt.Sprintf("a %d-character prompt was reported as %v input tokens, below the minimum of %d: usage is not real", chars, under, floor)
 	case missingOutput > 0:
 		f.Status = StatusWarn
 		f.Summary = fmt.Sprintf("%d responses returned text but reported zero output tokens", missingOutput)

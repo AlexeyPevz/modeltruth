@@ -8,11 +8,11 @@ import (
 )
 
 func tiny(input int64) Sample {
-	return Sample{Probe: ProbeTiny, Response: probe.Response{HTTPStatus: 200, ID: "chatcmpl-1", Model: "m", Text: "ok", Usage: probe.Usage{InputTokens: input, OutputTokens: 1}}}
+	return Sample{Probe: ProbeTiny, PromptChars: len(tinyPrompt("ok")), Response: probe.Response{HTTPStatus: 200, ID: "chatcmpl-1", Model: "m", Text: "ok", Usage: probe.Usage{InputTokens: input, OutputTokens: 1}}}
 }
 
 func medium(input, output int64, text string) Sample {
-	return Sample{Probe: ProbeMedium, Response: probe.Response{HTTPStatus: 200, ID: "chatcmpl-1", Model: "m", Text: text, Usage: probe.Usage{InputTokens: input, OutputTokens: output}}}
+	return Sample{Probe: ProbeMedium, PromptChars: len(mediumPrompt("ok")), Response: probe.Response{HTTPStatus: 200, ID: "chatcmpl-1", Model: "m", Text: text, Usage: probe.Usage{InputTokens: input, OutputTokens: output}}}
 }
 
 func withShape(id, model string) Sample {
@@ -70,7 +70,7 @@ func TestChannelConsistency(t *testing.T) {
 }
 
 func TestUsageSanity(t *testing.T) {
-	floor := int64(len(mediumPromptText) / 6)
+	floor := int64(len(mediumPrompt("ok")) / 6)
 	tests := []struct {
 		name    string
 		samples []Sample

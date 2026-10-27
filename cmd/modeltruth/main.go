@@ -27,7 +27,7 @@ Usage:
   modeltruth version
 
 The API key is read from $MODELTRUTH_API_KEY (override with --api-key-env).
-Exit codes: 0 no failed checks, 1 usage or runtime error, 2 at least one check failed.
+Exit codes: 0 no failed checks, 1 usage error or no request succeeded, 2 at least one check failed.
 `
 
 func main() {
@@ -97,15 +97,24 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	} else {
 		printReport(stdout, rep)
 	}
-	if rep.Verdict == checks.StatusFail {
+	switch rep.Verdict {
+	case checks.StatusFail:
 		return 2
+	case checks.StatusError:
+		return 1
 	}
 	return 0
 }
 
 func printReport(w io.Writer, rep checks.Report) {
-	fmt.Fprintf(w, "model:    %s\nrequests: %d\nverdict:  %s\n\n", rep.Model, rep.Requests, strings.ToUpper(string(rep.Verdict)))
+	fmt.Fprintf(w, "model:    %s\nrequests: %d (%d ok)\nverdict:  %s\n\n", rep.Model, rep.Requests, rep.Successful, strings.ToUpper(string(rep.Verdict)))
 	for _, f := range rep.Findings {
 		fmt.Fprintf(w, "[%-4s] %-20s %s\n", strings.ToUpper(string(f.Status)), f.Check, f.Summary)
+	}
+	if len(rep.Errors) > 0 {
+		fmt.Fprintf(w, "\nfailed requests:\n")
+		for _, e := range rep.Errors {
+			fmt.Fprintf(w, "  %-6s %s\n", e.Probe, e.Error)
+		}
 	}
 }

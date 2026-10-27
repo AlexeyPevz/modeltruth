@@ -21,7 +21,7 @@ func (f *fakeSender) Send(_ context.Context, req probe.Request) (probe.Response,
 func TestRun(t *testing.T) {
 	clean := func(_ int, req probe.Request) (probe.Response, error) {
 		input := int64(12)
-		if req.User == mediumPromptText {
+		if len(req.User) > 200 {
 			input = 140
 		}
 		return probe.Response{HTTPStatus: 200, ID: "msg_01MzmDFUhapVJeHMhAUX2ZwC", Model: "claude-sonnet-5", Text: "ok", Usage: probe.Usage{InputTokens: input, OutputTokens: 1}}, nil
@@ -38,7 +38,13 @@ func TestRun(t *testing.T) {
 	}{
 		{"clean endpoint passes", clean, StatusPass},
 		{"injected endpoint fails", injected, StatusFail},
-		{"unreachable endpoint skips", func(int, probe.Request) (probe.Response, error) { return probe.Response{}, errors.New("dial") }, StatusSkip},
+		{"unreachable endpoint is an error, not a pass or skip", func(int, probe.Request) (probe.Response, error) { return probe.Response{}, errors.New("dial") }, StatusError},
+		{"some failed requests do not hide a clean result", func(i int, req probe.Request) (probe.Response, error) {
+			if i == 0 {
+				return probe.Response{HTTPStatus: 503}, errors.New("probe: HTTP 503: busy")
+			}
+			return clean(i, req)
+		}, StatusPass},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,6 +59,49 @@ func TestRun(t *testing.T) {
 			if len(rep.Findings) != 4 {
 				t.Errorf("findings = %d, want 4", len(rep.Findings))
 			}
+			if rep.Successful+len(rep.Errors) != rep.Requests {
+				t.Errorf("successful %d + errors %d != requests %d", rep.Successful, len(rep.Errors), rep.Requests)
+			}
 		})
 	}
+}
+
+func TestRunReportsErrors(t *testing.T) {
+	s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) {
+		return probe.Response{HTTPStatus: 401}, errors.New("probe: HTTP 401: invalid key")
+	}}
+	rep := Run(context.Background(), s, "m", 2)
+	if len(rep.Errors) != 4 {
+		t.Fatalf("errors = %d, want 4", len(rep.Errors))
+	}
+	if e := rep.Errors[0]; e.HTTPStatus != 401 || e.Probe != ProbeTiny || e.Error != "probe: HTTP 401: invalid key" {
+		t.Errorf("first error = %+v", e)
+	}
+}
+
+func TestRunPromptVariation(t *testing.T) {
+	t.Run("one word for every request of a run", func(t *testing.T) {
+		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
+		runWithWord(context.Background(), s, "m", 3, "ready")
+		for i, c := range s.calls {
+			want := tinyPrompt("ready")
+			if i%2 == 1 {
+				want = mediumPrompt("ready")
+			}
+			if c.User != want {
+				t.Fatalf("call %d user = %q, want %q", i, c.User, want)
+			}
+		}
+	})
+	t.Run("the word changes between runs", func(t *testing.T) {
+		seen := map[string]bool{}
+		for i := 0; i < 40; i++ {
+			s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
+			Run(context.Background(), s, "m", 1)
+			seen[s.calls[0].User] = true
+		}
+		if len(seen) < 2 {
+			t.Errorf("40 runs used %d distinct tiny prompts, want several", len(seen))
+		}
+	})
 }
