@@ -16,6 +16,10 @@ argue with the result.
 
 ## Quick start
 
+Download a binary for your platform from
+[Releases](https://github.com/AlexeyPevz/modeltruth/releases) (checksums in
+`checksums.txt`), or build from source:
+
 ```sh
 go install github.com/AlexeyPevz/modeltruth/cmd/modeltruth@latest
 
