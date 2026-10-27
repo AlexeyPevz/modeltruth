@@ -44,6 +44,15 @@ func TestRun(t *testing.T) {
 		}
 		return r, nil
 	}
+	// The relay recognises probes by their small output limit (seen on A6 in
+	// October 2026: max_tokens 16 always clean, 300 injected).
+	injectsAboveProbeLimit := func(i int, req probe.Request) (probe.Response, error) {
+		r, _ := clean(i, req)
+		if req.MaxTokens > 64 {
+			r.Usage.InputTokens += 4388
+		}
+		return r, nil
+	}
 	tests := []struct {
 		name        string
 		responses   func(int, probe.Request) (probe.Response, error)
@@ -52,6 +61,7 @@ func TestRun(t *testing.T) {
 		{"clean endpoint passes", clean, StatusPass},
 		{"injected endpoint fails", injected, StatusFail},
 		{"injection only into work prompts fails", injectsIntoWork, StatusFail},
+		{"injection only above a probe-sized output limit fails", injectsAboveProbeLimit, StatusFail},
 		{"unreachable endpoint is an error, not a pass or skip", func(int, probe.Request) (probe.Response, error) { return probe.Response{}, errors.New("dial") }, StatusError},
 		{"some failed requests do not hide a clean result", func(i int, req probe.Request) (probe.Response, error) {
 			if i == 0 {
@@ -122,6 +132,20 @@ func TestRunPromptVariation(t *testing.T) {
 		}
 		if len(tinies) < 2 || len(taskSets) < 2 {
 			t.Errorf("40 runs used %d tiny prompts and %d task sets, want several of each", len(tinies), len(taskSets))
+		}
+	})
+	t.Run("output limits look like real clients and vary between requests", func(t *testing.T) {
+		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
+		Run(context.Background(), s, "m", 4)
+		limits := map[int]bool{}
+		for i, c := range s.calls {
+			if c.MaxTokens < 256 || c.MaxTokens > 4096 {
+				t.Fatalf("call %d max tokens = %d, want 256..4096", i, c.MaxTokens)
+			}
+			limits[c.MaxTokens] = true
+		}
+		if len(limits) < 2 {
+			t.Errorf("%d calls used %d distinct output limits, want several", len(s.calls), len(limits))
 		}
 	})
 	t.Run("drawn task prompts are distinct", func(t *testing.T) {

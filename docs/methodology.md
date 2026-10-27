@@ -59,7 +59,10 @@ Layer 1 ships in v0. The others are in development.
   Some relays serve probe-like prompts clean and prepend their own system
   prompt only to work: on 2026-10-27 three A6 channels billed `Reply with OK.`
   as 13 tokens and a multiplication question as 4,399. Relays that front
-  subscription clients typically add 4,000–8,000 tokens.
+  subscription clients typically add 4,000–8,000 tokens. Every request asks
+  for a realistic output limit (`max_tokens` drawn from 256–4096): on
+  2026-10-27 an A6 channel served all requests with `max_tokens` 16 clean
+  and injected 1,000–4,400 tokens into 9 of 16 identical requests with 300.
 - `channel_consistency`: identical prompts (tiny, medium and each task prompt)
   must not differ by more than 10% and 20 tokens in reported input. A larger
   spread means requests reach different upstream channels.

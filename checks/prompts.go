@@ -57,6 +57,16 @@ var taskPrompts = []string{
 	"What does HTTP status 429 mean? Answer in one short sentence.",
 }
 
+// outputLimits are max_tokens values real clients send. Some relays treat a
+// tiny limit as a probe and serve it from a clean upstream (seen on A6 in
+// October 2026: max_tokens 16 always clean, 300 injected ~4,400 tokens on
+// half the requests), so every request draws one of these instead.
+var outputLimits = []int{256, 512, 1024, 2048, 4096}
+
+func drawOutputLimit() int {
+	return outputLimits[rand.IntN(len(outputLimits))]
+}
+
 func taskProbe(i int) string {
 	return fmt.Sprintf("%s%d", probeTaskPrefix, i+1)
 }

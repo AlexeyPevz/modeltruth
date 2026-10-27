@@ -32,7 +32,8 @@ type Report struct {
 // Run sends the tiny, medium and TaskProbes task prompts repeats times each,
 // interleaved so a time-based channel switch shows up in all of them, and
 // evaluates every check. The answer word and the task prompts are drawn per
-// run; see answerWords and taskPrompts.
+// run, the output limit per request; see answerWords, taskPrompts and
+// outputLimits.
 func Run(ctx context.Context, s Sender, claimedModel string, repeats int) Report {
 	return runWith(ctx, s, claimedModel, repeats, answerWords[rand.IntN(len(answerWords))], drawTasks(TaskProbes))
 }
@@ -60,7 +61,7 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 			if ctx.Err() != nil {
 				break
 			}
-			resp, err := s.Send(ctx, probe.Request{User: p.text, MaxTokens: 16})
+			resp, err := s.Send(ctx, probe.Request{User: p.text, MaxTokens: drawOutputLimit()})
 			samples = append(samples, Sample{Probe: p.name, PromptChars: len(p.text), Response: resp, Err: err})
 		}
 	}
