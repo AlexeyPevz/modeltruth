@@ -115,3 +115,40 @@ func TestResponseShape(t *testing.T) {
 		})
 	}
 }
+
+func task(i int, prompt string, input int64) Sample {
+	return Sample{Probe: taskProbe(i), PromptChars: len(prompt), Response: probe.Response{HTTPStatus: 200, ID: "chatcmpl-1", Model: "m", Text: "x", Usage: probe.Usage{InputTokens: input, OutputTokens: 1}}}
+}
+
+func TestHiddenPromptOnTaskPrompts(t *testing.T) {
+	code := taskPrompts[1]
+	math := taskPrompts[0]
+	tests := []struct {
+		name    string
+		samples []Sample
+		want    Status
+	}{
+		{"clean tiny and task prompts pass", []Sample{tiny(13), task(0, math, 20), task(1, code, 32)}, StatusPass},
+		{"a relay that serves the probe clean but injects into real work fails", []Sample{tiny(13), tiny(13), task(0, math, 4399), task(1, code, 4411)}, StatusFail},
+		{"a few hundred extra tokens on a task prompt fails", []Sample{tiny(28), task(1, code, 891)}, StatusFail},
+		{"a long task prompt is allowed its own size", []Sample{tiny(12), task(1, code, int64(len(code)/2))}, StatusPass},
+		{"moderate overhead on a task prompt warns", []Sample{tiny(12), task(0, math, 120)}, StatusWarn},
+		{"task prompts alone are enough to check", []Sample{task(0, math, 4399)}, StatusFail},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := HiddenPrompt(tt.samples)
+			if got.Status != tt.want {
+				t.Errorf("status = %q, want %q (%s)", got.Status, tt.want, got.Summary)
+			}
+		})
+	}
+}
+
+func TestChannelConsistencyOnTaskPrompts(t *testing.T) {
+	code := taskPrompts[1]
+	got := ChannelConsistency([]Sample{tiny(12), tiny(12), task(1, code, 32), task(1, code, 4411)})
+	if got.Status != StatusFail {
+		t.Errorf("status = %q, want fail when one task prompt is billed differently (%s)", got.Status, got.Summary)
+	}
+}

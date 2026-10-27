@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/AlexeyPevz/modeltruth/probe"
@@ -18,17 +19,29 @@ func (f *fakeSender) Send(_ context.Context, req probe.Request) (probe.Response,
 	return f.responses(len(f.calls)-1, req)
 }
 
+// perRun is the number of requests one repeat sends: tiny, medium and the
+// task prompts.
+const perRun = 2 + TaskProbes
+
+func cleanInput(req probe.Request) int64 {
+	return int64(len(req.User)/4 + 8)
+}
+
 func TestRun(t *testing.T) {
 	clean := func(_ int, req probe.Request) (probe.Response, error) {
-		input := int64(12)
-		if len(req.User) > 200 {
-			input = 140
-		}
-		return probe.Response{HTTPStatus: 200, ID: "msg_01MzmDFUhapVJeHMhAUX2ZwC", Model: "claude-sonnet-5", Text: "ok", Usage: probe.Usage{InputTokens: input, OutputTokens: 1}}, nil
+		return probe.Response{HTTPStatus: 200, ID: "msg_01MzmDFUhapVJeHMhAUX2ZwC", Model: "claude-sonnet-5", Text: "ok", Usage: probe.Usage{InputTokens: cleanInput(req), OutputTokens: 1}}, nil
 	}
 	injected := func(i int, req probe.Request) (probe.Response, error) {
 		r, _ := clean(i, req)
 		r.Usage.InputTokens += 4380
+		return r, nil
+	}
+	// The relay recognises the probe prompts and injects only into work.
+	injectsIntoWork := func(i int, req probe.Request) (probe.Response, error) {
+		r, _ := clean(i, req)
+		if !strings.HasPrefix(req.User, "Reply with the single word") && !strings.HasPrefix(req.User, "A lighthouse keeper") {
+			r.Usage.InputTokens += 4386
+		}
 		return r, nil
 	}
 	tests := []struct {
@@ -38,6 +51,7 @@ func TestRun(t *testing.T) {
 	}{
 		{"clean endpoint passes", clean, StatusPass},
 		{"injected endpoint fails", injected, StatusFail},
+		{"injection only into work prompts fails", injectsIntoWork, StatusFail},
 		{"unreachable endpoint is an error, not a pass or skip", func(int, probe.Request) (probe.Response, error) { return probe.Response{}, errors.New("dial") }, StatusError},
 		{"some failed requests do not hide a clean result", func(i int, req probe.Request) (probe.Response, error) {
 			if i == 0 {
@@ -53,8 +67,8 @@ func TestRun(t *testing.T) {
 			if rep.Verdict != tt.wantVerdict {
 				t.Errorf("verdict = %q, want %q: %+v", rep.Verdict, tt.wantVerdict, rep.Findings)
 			}
-			if len(s.calls) != 6 || rep.Requests != 6 {
-				t.Errorf("requests = %d (report %d), want 6", len(s.calls), rep.Requests)
+			if len(s.calls) != 3*perRun || rep.Requests != 3*perRun {
+				t.Errorf("requests = %d (report %d), want %d", len(s.calls), rep.Requests, 3*perRun)
 			}
 			if len(rep.Findings) != 4 {
 				t.Errorf("findings = %d, want 4", len(rep.Findings))
@@ -71,8 +85,8 @@ func TestRunReportsErrors(t *testing.T) {
 		return probe.Response{HTTPStatus: 401}, errors.New("probe: HTTP 401: invalid key")
 	}}
 	rep := Run(context.Background(), s, "m", 2)
-	if len(rep.Errors) != 4 {
-		t.Fatalf("errors = %d, want 4", len(rep.Errors))
+	if len(rep.Errors) != 2*perRun {
+		t.Fatalf("errors = %d, want %d", len(rep.Errors), 2*perRun)
 	}
 	if e := rep.Errors[0]; e.HTTPStatus != 401 || e.Probe != ProbeTiny || e.Error != "probe: HTTP 401: invalid key" {
 		t.Errorf("first error = %+v", e)
@@ -80,28 +94,46 @@ func TestRunReportsErrors(t *testing.T) {
 }
 
 func TestRunPromptVariation(t *testing.T) {
-	t.Run("one word for every request of a run", func(t *testing.T) {
+	tasks := []string{taskPrompts[0], taskPrompts[1], taskPrompts[2]}
+	t.Run("every repeat sends the same prompts in the same order", func(t *testing.T) {
 		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
-		runWithWord(context.Background(), s, "m", 3, "ready")
+		runWith(context.Background(), s, "m", 3, "ready", tasks)
+		want := append([]string{tinyPrompt("ready"), mediumPrompt("ready")}, tasks...)
+		if len(s.calls) != 3*len(want) {
+			t.Fatalf("calls = %d, want %d", len(s.calls), 3*len(want))
+		}
 		for i, c := range s.calls {
-			want := tinyPrompt("ready")
-			if i%2 == 1 {
-				want = mediumPrompt("ready")
-			}
-			if c.User != want {
-				t.Fatalf("call %d user = %q, want %q", i, c.User, want)
+			if c.User != want[i%len(want)] {
+				t.Fatalf("call %d user = %q, want %q", i, c.User, want[i%len(want)])
 			}
 		}
 	})
-	t.Run("the word changes between runs", func(t *testing.T) {
-		seen := map[string]bool{}
+	t.Run("the word and the task prompts change between runs", func(t *testing.T) {
+		tinies, taskSets := map[string]bool{}, map[string]bool{}
 		for i := 0; i < 40; i++ {
 			s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
 			Run(context.Background(), s, "m", 1)
-			seen[s.calls[0].User] = true
+			tinies[s.calls[0].User] = true
+			var set []string
+			for _, c := range s.calls[2:] {
+				set = append(set, c.User)
+			}
+			taskSets[strings.Join(set, "|")] = true
 		}
-		if len(seen) < 2 {
-			t.Errorf("40 runs used %d distinct tiny prompts, want several", len(seen))
+		if len(tinies) < 2 || len(taskSets) < 2 {
+			t.Errorf("40 runs used %d tiny prompts and %d task sets, want several of each", len(tinies), len(taskSets))
+		}
+	})
+	t.Run("drawn task prompts are distinct", func(t *testing.T) {
+		seen := map[string]bool{}
+		for _, p := range drawTasks(TaskProbes) {
+			if seen[p] {
+				t.Fatalf("task prompt %q drawn twice", p)
+			}
+			seen[p] = true
+		}
+		if len(seen) != TaskProbes {
+			t.Fatalf("drew %d prompts, want %d", len(seen), TaskProbes)
 		}
 	})
 }

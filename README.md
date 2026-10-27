@@ -39,7 +39,7 @@ check failed.
 
 | Check | Detects | How |
 |---|---|---|
-| `hidden_prompt` | The relay prepends its own system prompt (and bills you for it) | A 30-character prompt must not be billed as hundreds of input tokens |
+| `hidden_prompt` | The relay prepends its own system prompt (and bills you for it) | A 30-character probe or a short realistic task must not be billed as hundreds of extra input tokens |
 | `channel_consistency` | One model name served by several upstream channels | Identical requests must report the same input size |
 | `usage_sanity` | Fabricated or under-reported usage | A ~700-character prompt cannot tokenize to fewer than len/6 tokens |
 | `response_shape` | Rewritten or foreign responses | Anthropic message id format, echoed model name |

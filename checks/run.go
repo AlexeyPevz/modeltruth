@@ -29,14 +29,15 @@ type Report struct {
 	Findings   []Finding     `json:"findings"`
 }
 
-// Run sends the tiny and medium prompts repeats times each, interleaved so a
-// time-based channel switch shows up in both, and evaluates every check. The
-// answer word is drawn per run; see answerWords.
+// Run sends the tiny, medium and TaskProbes task prompts repeats times each,
+// interleaved so a time-based channel switch shows up in all of them, and
+// evaluates every check. The answer word and the task prompts are drawn per
+// run; see answerWords and taskPrompts.
 func Run(ctx context.Context, s Sender, claimedModel string, repeats int) Report {
-	return runWithWord(ctx, s, claimedModel, repeats, answerWords[rand.IntN(len(answerWords))])
+	return runWith(ctx, s, claimedModel, repeats, answerWords[rand.IntN(len(answerWords))], drawTasks(TaskProbes))
 }
 
-func runWithWord(ctx context.Context, s Sender, claimedModel string, repeats int, word string) Report {
+func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, word string, tasks []string) Report {
 	if repeats < 1 {
 		repeats = 1
 	}
@@ -46,6 +47,12 @@ func runWithWord(ctx context.Context, s Sender, claimedModel string, repeats int
 	}{
 		{ProbeTiny, tinyPrompt(word)},
 		{ProbeMedium, mediumPrompt(word)},
+	}
+	for i, t := range tasks {
+		prompts = append(prompts, struct {
+			name string
+			text string
+		}{taskProbe(i), t})
 	}
 	var samples []Sample
 	for i := 0; i < repeats; i++ {

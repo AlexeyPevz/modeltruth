@@ -49,14 +49,20 @@ Layer 1 ships in v0. The others are in development.
 
 ## Layer 1 thresholds
 
-- `hidden_prompt`: the prompt `Reply with the single word: <word>` is about 30
-  characters, with the word drawn per run from a fixed list of short words;
-  clean channels measured so far report 10–19 input tokens for it.
-  Over 60 is a warning, over 300 is a failure. Relays that front subscription clients typically add
-  4,000–8,000 tokens.
-- `channel_consistency`: identical prompts must not differ by more than 10% and
-  20 tokens in reported input. A larger spread means requests reach different
-  upstream channels.
+- `hidden_prompt`: every tiny and task prompt may be billed for half a token
+  per character; more than 45 tokens beyond that is a warning, more than 285
+  is a failure. The tiny prompt `Reply with the single word: <word>` is about
+  30 characters (word drawn per run), so the limits stay near 60 and 300
+  tokens for it; clean channels measured so far report 10–19. Each run also
+  sends three task prompts drawn from a list of realistic requests (a
+  multiplication, a short Python function, a SQL query, a pet question...).
+  Some relays serve probe-like prompts clean and prepend their own system
+  prompt only to work: on 2026-10-27 three A6 channels billed `Reply with OK.`
+  as 13 tokens and a multiplication question as 4,399. Relays that front
+  subscription clients typically add 4,000–8,000 tokens.
+- `channel_consistency`: identical prompts (tiny, medium and each task prompt)
+  must not differ by more than 10% and 20 tokens in reported input. A larger
+  spread means requests reach different upstream channels.
 - `usage_sanity`: English text never tokenizes to fewer than one token per six
   characters, so the ~700-character prompt must report at least len/6 input
   tokens. Text with zero output tokens is a warning.
