@@ -6,6 +6,7 @@ package checks
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/AlexeyPevz/modeltruth/probe"
@@ -39,12 +40,13 @@ type Sample struct {
 	Err         error
 }
 
-// Thresholds for the tiny prompt. A bare "Reply with the single word: ok"
-// costs roughly 8-20 input tokens on every tokenizer and chat template we
-// have measured; a few hundred tokens means text was added to the request.
+// Thresholds on the input billed beyond hiddenPromptAllowance. A bare "Reply
+// with the single word: ok" costs roughly 8-20 input tokens on every
+// tokenizer and chat template we have measured; a few hundred extra tokens
+// means text was added to the request.
 const (
-	hiddenPromptWarnTokens = 60
-	hiddenPromptFailTokens = 300
+	hiddenPromptWarnTokens = 45
+	hiddenPromptFailTokens = 285
 )
 
 // Two identical requests to one model must report nearly the same input size.
@@ -89,36 +91,65 @@ func inputs(responses []probe.Response) []int64 {
 	return out
 }
 
-// HiddenPrompt fails when the tiny prompt is billed as far more input than it
-// contains, which means the relay prepends its own system prompt.
+// hiddenPromptAllowance is the input a prompt may be billed for before the
+// excess counts as added text: half a token per character is well above any
+// tokenizer on English text, and the thresholds above cover the chat template.
+func hiddenPromptAllowance(chars int) int64 {
+	return int64(chars / 2)
+}
+
+// HiddenPrompt fails when the tiny prompt or a task prompt is billed as far
+// more input than it contains, which means the relay prepends its own system
+// prompt. Task prompts matter because some relays serve probe-like prompts
+// clean and inject only into requests that look like real work.
 func HiddenPrompt(samples []Sample) Finding {
 	f := Finding{Check: "hidden_prompt"}
-	responses := ok(samples, ProbeTiny)
-	if len(responses) == 0 {
-		f.Status, f.Summary = StatusSkip, "no successful tiny-prompt responses"
-		return f
-	}
-	counts := inputs(responses)
-	var maxInput int64
-	inflated := 0
-	for _, c := range counts {
-		maxInput = max(maxInput, c)
-		if c > hiddenPromptFailTokens {
+	var (
+		checked, inflated int
+		worstExcess       int64 = -1 << 62
+		worstProbe        string
+		worstInput        int64
+		worstChars        int
+		tasks             = map[string][]int64{}
+	)
+	for _, s := range samples {
+		if s.Err != nil || (s.Probe != ProbeTiny && !isTaskProbe(s.Probe)) {
+			continue
+		}
+		checked++
+		in := s.Response.Usage.InputTokens
+		excess := in - hiddenPromptAllowance(s.PromptChars)
+		if excess > hiddenPromptFailTokens {
 			inflated++
 		}
+		if excess > worstExcess {
+			worstExcess, worstProbe, worstInput, worstChars = excess, s.Probe, in, s.PromptChars
+		}
+		if isTaskProbe(s.Probe) {
+			tasks[s.Probe] = append(tasks[s.Probe], in)
+		}
 	}
-	chars := promptChars(samples, ProbeTiny)
-	f.Evidence = map[string]any{"input_tokens": counts, "prompt_chars": chars}
+	if checked == 0 {
+		f.Status, f.Summary = StatusSkip, "no successful tiny or task prompt responses"
+		return f
+	}
+	f.Evidence = map[string]any{
+		"input_tokens":      inputs(ok(samples, ProbeTiny)),
+		"prompt_chars":      promptChars(samples, ProbeTiny),
+		"task_input_tokens": tasks,
+		"worst_probe":       worstProbe,
+		"worst_excess":      worstExcess,
+	}
 	switch {
-	case maxInput > hiddenPromptFailTokens:
+	case worstExcess > hiddenPromptFailTokens:
 		f.Status = StatusFail
-		f.Summary = fmt.Sprintf("a %d-character prompt was billed as up to %d input tokens in %d of %d requests: the endpoint adds a hidden prompt", chars, maxInput, inflated, len(counts))
-	case maxInput > hiddenPromptWarnTokens:
+		f.Summary = fmt.Sprintf("a %d-character prompt (%s) was billed as %d input tokens; %d of %d requests carried hundreds of extra tokens: the endpoint adds a hidden prompt", worstChars, worstProbe, worstInput, inflated, checked)
+	case worstExcess > hiddenPromptWarnTokens:
 		f.Status = StatusWarn
-		f.Summary = fmt.Sprintf("tiny prompt billed as up to %d input tokens; expected under %d", maxInput, hiddenPromptWarnTokens)
+		f.Summary = fmt.Sprintf("a %d-character prompt (%s) was billed as %d input tokens, %d more than expected", worstChars, worstProbe, worstInput, worstExcess)
 	default:
 		f.Status = StatusPass
-		f.Summary = fmt.Sprintf("tiny prompt billed as at most %d input tokens", maxInput)
+		f.Summary = fmt.Sprintf("tiny and task prompts were billed close to their size (largest excess %d tokens)", max(worstExcess, 0))
 	}
 	return f
 }
@@ -130,7 +161,7 @@ func ChannelConsistency(samples []Sample) Finding {
 	evidence := map[string]any{}
 	compared := 0
 	var worst string
-	for _, name := range []string{ProbeTiny, ProbeMedium} {
+	for _, name := range probeNames(samples) {
 		counts := inputs(ok(samples, name))
 		if len(counts) < 2 {
 			continue
@@ -252,4 +283,21 @@ func nameParts(name string) []string {
 	return strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
 	})
+}
+
+// probeNames lists the probes present in samples: tiny, medium, then task
+// probes in order.
+func probeNames(samples []Sample) []string {
+	seen := map[string]bool{}
+	out := []string{ProbeTiny, ProbeMedium}
+	seen[ProbeTiny], seen[ProbeMedium] = true, true
+	var tasks []string
+	for _, s := range samples {
+		if !seen[s.Probe] {
+			seen[s.Probe] = true
+			tasks = append(tasks, s.Probe)
+		}
+	}
+	sort.Strings(tasks)
+	return append(out, tasks...)
 }
