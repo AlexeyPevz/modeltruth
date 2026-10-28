@@ -30,8 +30,8 @@ type Report struct {
 }
 
 // Run sends the tiny, medium and TaskProbes task prompts repeats times each,
-// interleaved so a time-based channel switch shows up in all of them, and
-// evaluates every check. The answer word and the task prompts are drawn per
+// interleaved so a time-based channel switch shows up in all of them, then the
+// TokenizerProbes tokenizer prompts once, and evaluates every check. The answer word and the task prompts are drawn per
 // run, the output limit per request; see answerWords, taskPrompts and
 // outputLimits.
 func Run(ctx context.Context, s Sender, claimedModel string, repeats int) Report {
@@ -65,6 +65,7 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 			samples = append(samples, Sample{Probe: p.name, PromptChars: len(p.text), Response: resp, Err: err})
 		}
 	}
+	samples = append(samples, tokenizerRun(ctx, s)...)
 	rep := Report{Model: claimedModel, Requests: len(samples)}
 	for _, sample := range samples {
 		if sample.Err != nil {
@@ -78,6 +79,7 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 		ChannelConsistency(samples),
 		UsageSanity(samples),
 		ResponseShape(samples, claimedModel),
+		Tokenizer(samples, claimedModel),
 	}
 	rep.Verdict = Verdict(rep.Findings)
 	if rep.Successful == 0 {
@@ -86,6 +88,27 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 		rep.Verdict = StatusError
 	}
 	return rep
+}
+
+// tokenizerRun sends the base prompt, every tokenizer text, and the base
+// prompt again, so a channel switch during the sequence shows up as two
+// different base counts.
+func tokenizerRun(ctx context.Context, s Sender) []Sample {
+	prompts := make([]struct{ name, text string }, 0, TokenizerProbes)
+	prompts = append(prompts, struct{ name, text string }{ProbeTokenizerBase, tokenizerBase})
+	for _, t := range tokenizerTexts {
+		prompts = append(prompts, struct{ name, text string }{probeTokenizerPrefix + t.name, tokenizerPrompt(t.text)})
+	}
+	prompts = append(prompts, struct{ name, text string }{ProbeTokenizerBase, tokenizerBase})
+	var out []Sample
+	for _, p := range prompts {
+		if ctx.Err() != nil {
+			break
+		}
+		resp, err := s.Send(ctx, probe.Request{User: p.text, MaxTokens: drawOutputLimit()})
+		out = append(out, Sample{Probe: p.name, PromptChars: len(p.text), Response: resp, Err: err})
+	}
+	return out
 }
 
 // Verdict is the worst status among findings; skips count only when nothing
