@@ -30,7 +30,7 @@ tokenizer. modeltruth therefore combines layers and reports each one separately.
 | 4. Tier | Which tier answered? | Distributions of "random" choices (words, numbers), capability edges | Yes, per model and environment | 3 failures within 24 hours |
 | 5. Signature model name | Which model signed the thinking block? | Model identifier inside the Claude signature, if the format allows it | No | 2 consecutive failures |
 
-Layer 1 ships in v0. The others are in development.
+Layer 1 and the tokenizer part of layer 3 ship. The others are in development.
 
 ## Decision rules
 
@@ -73,6 +73,38 @@ Layer 1 ships in v0. The others are in development.
   (`msg_vrtx_01…` on Vertex, `msg_bdrk_01…` on Bedrock). `msg_` followed by 32
   hex characters is a reverse-proxy signature. Gateways legitimately rewrite ids
   and model names, so this check only warns.
+
+## Layer 3: tokenizer
+
+Each run sends `Reply with OK.` twice (first and last) and the same prompt
+plus a newline plus each of 12 fixed texts (Japanese, emoji, rare English
+words, code, 50 digits, whitespace, Russian, Korean, Arabic, Hindi, math,
+URL). The chat template and any relay system prompt add the same constant to
+every request, so each difference is the text's token count under the serving
+model's tokenizer.
+
+- A difference below half of what any known tokenizer gives (50 digits billed
+  as 4 tokens, zero or negative) is a failure: usage is estimated, not
+  tokenized. When the base itself carries a hidden prompt, negative
+  differences only mean that request was not injected and are ignored.
+- A text billed far above its size carried a hidden prompt on that request
+  alone and is ignored; fewer than 8 usable texts, or two base counts more
+  than one token apart, skip the check.
+- The rest must match a profile of the claimed family within one token, with
+  one text allowed to miss. Matching another family, or no profile, fails.
+
+The bank (2026-10-28): o200k and cl100k from tiktoken, Gemma 3, DeepSeek-V3,
+GLM-4, Qwen, Llama 3, Mistral Nemo and MiniMax-M1 counted offline from public
+tokenizers; every public profile matched live channels exactly. Claude's
+tokenizer is closed: its profile is the one LinkAPI (claude-opus-5-5,
+claude-sonnet-5-5, claude-sonnet-5) and three A6 channels agreed on. On A6 the
+check found a GPT (o200k) sold as gemini-4-argon, DeepSeek sold as
+glm-5.3-flashx, a cl100k model sold as gpt-6-luna and gpt-5.6-luna, word-count
+usage on a channel selling Claude and Gemini, and Claude channels matching no
+Claude profile.
+
+Tiers that share a tokenizer (Opus, Sonnet, Haiku of one generation) are not
+separated; a channel that switches upstreams between requests may pass one run.
 
 ## Pilot, 2026-10-26
 

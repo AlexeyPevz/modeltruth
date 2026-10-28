@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/AlexeyPevz/modeltruth/probe"
 )
@@ -23,7 +24,21 @@ func (f *fakeSender) Send(_ context.Context, req probe.Request) (probe.Response,
 // task prompts.
 const perRun = 2 + TaskProbes
 
+// cleanInput bills like a Claude endpoint: tokenizer probes get the Claude
+// profile, everything else a plausible count.
 func cleanInput(req probe.Request) int64 {
+	if req.User == tokenizerBase {
+		return 12
+	}
+	for i, t := range tokenizerTexts {
+		if req.User == tokenizerPrompt(t.text) {
+			for _, p := range tokenizerBank {
+				if p.name == "claude" {
+					return 12 + int64(p.deltas[i])
+				}
+			}
+		}
+	}
 	return int64(len(req.User)/4 + 8)
 }
 
@@ -62,6 +77,13 @@ func TestRun(t *testing.T) {
 		{"injected endpoint fails", injected, StatusFail},
 		{"injection only into work prompts fails", injectsIntoWork, StatusFail},
 		{"injection only above a probe-sized output limit fails", injectsAboveProbeLimit, StatusFail},
+		{"usage from another tokenizer fails", func(i int, req probe.Request) (probe.Response, error) {
+			r, _ := clean(i, req)
+			if strings.HasPrefix(req.User, tokenizerBase+"\n") {
+				r.Usage.InputTokens = 12 + int64(utf8.RuneCountInString(req.User)-len(tokenizerBase)-1)
+			}
+			return r, nil
+		}, StatusFail},
 		{"unreachable endpoint is an error, not a pass or skip", func(int, probe.Request) (probe.Response, error) { return probe.Response{}, errors.New("dial") }, StatusError},
 		{"some failed requests do not hide a clean result", func(i int, req probe.Request) (probe.Response, error) {
 			if i == 0 {
@@ -77,11 +99,11 @@ func TestRun(t *testing.T) {
 			if rep.Verdict != tt.wantVerdict {
 				t.Errorf("verdict = %q, want %q: %+v", rep.Verdict, tt.wantVerdict, rep.Findings)
 			}
-			if len(s.calls) != 3*perRun || rep.Requests != 3*perRun {
-				t.Errorf("requests = %d (report %d), want %d", len(s.calls), rep.Requests, 3*perRun)
+			if want := 3*perRun + TokenizerProbes; len(s.calls) != want || rep.Requests != want {
+				t.Errorf("requests = %d (report %d), want %d", len(s.calls), rep.Requests, want)
 			}
-			if len(rep.Findings) != 4 {
-				t.Errorf("findings = %d, want 4", len(rep.Findings))
+			if len(rep.Findings) != 5 {
+				t.Errorf("findings = %d, want 5", len(rep.Findings))
 			}
 			if rep.Successful+len(rep.Errors) != rep.Requests {
 				t.Errorf("successful %d + errors %d != requests %d", rep.Successful, len(rep.Errors), rep.Requests)
@@ -95,8 +117,8 @@ func TestRunReportsErrors(t *testing.T) {
 		return probe.Response{HTTPStatus: 401}, errors.New("probe: HTTP 401: invalid key")
 	}}
 	rep := Run(context.Background(), s, "m", 2)
-	if len(rep.Errors) != 2*perRun {
-		t.Fatalf("errors = %d, want %d", len(rep.Errors), 2*perRun)
+	if len(rep.Errors) != 2*perRun+TokenizerProbes {
+		t.Fatalf("errors = %d, want %d", len(rep.Errors), 2*perRun+TokenizerProbes)
 	}
 	if e := rep.Errors[0]; e.HTTPStatus != 401 || e.Probe != ProbeTiny || e.Error != "probe: HTTP 401: invalid key" {
 		t.Errorf("first error = %+v", e)
@@ -109,13 +131,17 @@ func TestRunPromptVariation(t *testing.T) {
 		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
 		runWith(context.Background(), s, "m", 3, "ready", tasks)
 		want := append([]string{tinyPrompt("ready"), mediumPrompt("ready")}, tasks...)
-		if len(s.calls) != 3*len(want) {
-			t.Fatalf("calls = %d, want %d", len(s.calls), 3*len(want))
+		if len(s.calls) != 3*len(want)+TokenizerProbes {
+			t.Fatalf("calls = %d, want %d", len(s.calls), 3*len(want)+TokenizerProbes)
 		}
-		for i, c := range s.calls {
+		for i, c := range s.calls[:3*len(want)] {
 			if c.User != want[i%len(want)] {
 				t.Fatalf("call %d user = %q, want %q", i, c.User, want[i%len(want)])
 			}
+		}
+		tok := s.calls[3*len(want):]
+		if tok[0].User != tokenizerBase || tok[len(tok)-1].User != tokenizerBase {
+			t.Errorf("tokenizer probes must start and end with the base prompt")
 		}
 	})
 	t.Run("the word and the task prompts change between runs", func(t *testing.T) {

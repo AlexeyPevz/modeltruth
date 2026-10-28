@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRunCheckExitCodes(t *testing.T) {
@@ -22,16 +24,24 @@ func TestRunCheckExitCodes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				input := tt.input
-				if r.ContentLength > 300 {
-					input += 130
+				var body struct {
+					Messages []struct {
+						Content string `json:"content"`
+					} `json:"messages"`
 				}
-				_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"gpt-6-sol","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":` + itoa(input) + `,"completion_tokens":1}}`))
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				// Two tokens per three characters: plausible for every check,
+				// and kimi-k3 has no reference tokenizer to match.
+				input := tt.input
+				for _, m := range body.Messages {
+					input += utf8.RuneCountInString(m.Content) * 2 / 3
+				}
+				_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"kimi-k3","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":` + itoa(input) + `,"completion_tokens":1}}`))
 			}))
 			defer srv.Close()
 			t.Setenv("MODELTRUTH_API_KEY", "test-key")
 			var out, errOut bytes.Buffer
-			code := run([]string{"check", "--base-url", srv.URL, "--model", "gpt-6-sol"}, &out, &errOut)
+			code := run([]string{"check", "--base-url", srv.URL, "--model", "kimi-k3"}, &out, &errOut)
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d; stderr: %s", code, tt.wantCode, errOut.String())
 			}
