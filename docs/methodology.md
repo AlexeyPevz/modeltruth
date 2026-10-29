@@ -92,16 +92,24 @@ model's tokenizer.
   than one token apart, skip the check.
 - The rest must match a profile of the claimed family within one token, with
   one text allowed to miss. Matching another family, or no profile, fails.
+- Differences that follow a profile of the claimed family at one constant
+  factor of 1.04 or more fail as inflated usage: the right tokenizer, with
+  every bill multiplied (a Claude channel billing 10% above Claude on all 12
+  texts).
 
 The bank (2026-10-28): o200k and cl100k from tiktoken, Gemma 3, DeepSeek-V3,
 GLM-4, Qwen, Llama 3, Mistral Nemo and MiniMax-M1 counted offline from public
 tokenizers; every public profile matched live channels exactly. Claude's
 tokenizer is closed: its profile is the one LinkAPI (claude-opus-5-5,
-claude-sonnet-5-5, claude-sonnet-5) and three A6 channels agreed on. On A6 the
+claude-sonnet-5-5, claude-sonnet-5) and three A6 channels agreed on. On
+2026-10-29 it was confirmed against Anthropic's own claude-opus-5-5 (8 texts)
+and claude-sonnet-5-5 (2 texts), and o200k against OpenAI's gpt-6.1-sol
+(4 texts), both served by Factory and measured from the session token usage. On A6 the
 check found a GPT (o200k) sold as gemini-4-argon, DeepSeek sold as
 glm-5.3-flashx, a cl100k model sold as gpt-6-luna and gpt-5.6-luna, word-count
-usage on a channel selling Claude and Gemini, and Claude channels matching no
-Claude profile.
+usage on a channel selling Claude and Gemini, Claude channels billing 10% above
+the Claude tokenizer, and four gpt-6.1-sol channels whose tokenizer is not
+o200k.
 
 Tiers that share a tokenizer (Opus, Sonnet, Haiku of one generation) are not
 separated; a channel that switches upstreams between requests may pass one run.

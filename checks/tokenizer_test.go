@@ -47,6 +47,13 @@ func TestTokenizer(t *testing.T) {
 	ch687 := []int64{15, 16, 16, 37, 14, 10, 27, 42, 34, 42, 57, 30}
 	// Channels 3825 and 3755: word-count usage, 50 digits billed as 4 tokens.
 	wordCount := []int64{26, 17, 7, 55, 4, 19, 21, 46, 23, 52, 90, 52}
+	// Channel 2863 sold as claude-sonnet-5 on 2026-10-28: the Claude
+	// tokenizer with every count about 10% higher.
+	ch2863 := []int64{21, 18, 50, 52, 20, 11, 30, 51, 42, 51, 71, 39}
+	o200kPlus25 := make([]int64, len(o200k))
+	for i, d := range o200k {
+		o200kPlus25[i] = (d*5 + 2) / 4
+	}
 	tests := []struct {
 		name     string
 		model    string
@@ -63,6 +70,8 @@ func TestTokenizer(t *testing.T) {
 		{"Gemini model billed like Gemma 3 passes", "gemini-4-argon", tokenizerSamples(34, 34, profileDeltas(t, "gemma3")), StatusPass, "gemma3"},
 		{"Claude billed like the Claude tokenizer passes", "claude-opus-5-5", tokenizerSamples(15, 15, claude), StatusPass, "claude"},
 		{"Claude matching no known tokenizer fails", "claude-haiku-4-5", tokenizerSamples(15, 15, ch687), StatusFail, "no known anthropic tokenizer"},
+		{"Claude billed 10% above the Claude tokenizer is inflated", "claude-sonnet-5", tokenizerSamples(14, 14, ch2863), StatusFail, "claude tokenizer inflated by 10%"},
+		{"GPT billed 25% above o200k is inflated", "gpt-6-luna", tokenizerSamples(10, 10, o200kPlus25), StatusFail, "o200k tokenizer inflated by 25%"},
 		{"word-count usage fails for any model", "kimi-k3", tokenizerSamples(15, 15, wordCount), StatusFail, "not computed by a tokenizer"},
 		{"zero deltas fail", "claude-opus-5-5", tokenizerSamples(3, 3, make([]int64, len(tokenizerTexts))), StatusFail, "not computed by a tokenizer"},
 		{"a consistent hidden prompt cancels out", "gpt-6-luna", tokenizerSamples(4390, 4390, o200k), StatusPass, "o200k"},
