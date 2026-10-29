@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -54,11 +55,12 @@ type tokenizerProfile struct {
 
 // tokenizerBank, measured 2026-10-28. Public tokenizers were counted offline
 // and matched live channels exactly; closed ones are taken only where two
-// independent sellers agree.
+// independent sellers agree, and o200k and claude were confirmed on 2026-10-29
+// against the vendors' own models served by Factory.
 var tokenizerBank = []tokenizerProfile{
-	{"o200k", "openai", "tiktoken o200k_base; equal on 14 A6 channels (gpt-5.4, gpt-5.6-sol, gpt-6-astra, gpt-6.1-terra) and LinkAPI gpt-4.1-mini", []int{16, 12, 28, 36, 17, 8, 19, 32, 21, 26, 49, 27}},
+	{"o200k", "openai", "tiktoken o200k_base; equal on 14 A6 channels (gpt-5.4, gpt-5.6-sol, gpt-6-astra, gpt-6.1-terra), LinkAPI gpt-4.1-mini and Factory gpt-6.1-sol", []int{16, 12, 28, 36, 17, 8, 19, 32, 21, 26, 49, 27}},
 	{"cl100k", "openai-legacy", "tiktoken cl100k_base", []int{22, 14, 30, 36, 17, 8, 36, 49, 39, 67, 50, 27}},
-	{"claude", "anthropic", "LinkAPI claude-opus-5-5, claude-sonnet-5-5, claude-sonnet-5 and A6 channels 6481, 6328, 6484", []int{19, 16, 47, 48, 18, 10, 27, 46, 38, 46, 65, 36}},
+	{"claude", "anthropic", "Factory claude-opus-5-5 and claude-sonnet-5-5; LinkAPI claude-opus-5-5, claude-sonnet-5-5, claude-sonnet-5 and A6 channels 6481, 6328, 6484", []int{19, 16, 47, 48, 18, 10, 27, 46, 38, 46, 65, 36}},
 	{"claude-2", "anthropic-legacy", "Xenova/claude-tokenizer (Claude 1 and 2)", []int{24, 15, 32, 40, 23, 8, 40, 51, 53, 76, 51, 34}},
 	{"gemma3", "google", "Gemma 3 tokenizer; equal on A6 gemini-4-argon 4803, gemini-3.8-flash 1551, 3844 and LinkAPI gemini-3.8-flash", []int{12, 6, 27, 42, 51, 9, 19, 29, 24, 22, 45, 35}},
 	{"gemini-b", "google", "A6 gemini-4-argon channels 1508 and 6430; digits tokenized one by one like Gemma", []int{11, 5, 25, 42, 51, 9, 19, 25, 22, 24, 44, 35}},
@@ -78,6 +80,42 @@ const (
 	maxTokenizerOutliers = 1
 	minTokenizerTexts    = 8
 )
+
+// minInflation is the smallest overbilling reported as such: rounding moves
+// the ratio of an honest channel by a percent or two at most.
+const minInflation = 1.04
+
+// inflatedProfile finds a profile of the family that every text follows at
+// one factor above minInflation: the channel serves that tokenizer and
+// multiplies the usage it bills. Rounding of the multiplied count is allowed
+// on top of the usual tolerance.
+func inflatedProfile(valid map[int]int64, family string) (*tokenizerProfile, float64) {
+	for i := range tokenizerBank {
+		p := &tokenizerBank[i]
+		if p.family != family {
+			continue
+		}
+		var got, want float64
+		for j, d := range valid {
+			got += float64(d)
+			want += float64(p.deltas[j])
+		}
+		if want == 0 || got/want < minInflation {
+			continue
+		}
+		r, miss := got/want, 0
+		for j, d := range valid {
+			expected := r * float64(p.deltas[j])
+			if math.Abs(float64(d)-expected) > tokenizerTolerance+0.02*expected {
+				miss++
+			}
+		}
+		if miss <= maxTokenizerOutliers {
+			return p, r
+		}
+	}
+	return nil, 0
+}
 
 // tokenizerFloor is half the smallest count any known tokenizer gives a text.
 // A count below it is not produced by a tokenizer at all: such relays estimate
@@ -222,6 +260,11 @@ func Tokenizer(samples []Sample, claimedModel string) Finding {
 	case match != nil:
 		f.Status, f.Summary = StatusFail, fmt.Sprintf("%q is billed like %s (%s), not a %s tokenizer: another model serves this name", claimedModel, match.name, match.family, family)
 	default:
+		if p, r := inflatedProfile(valid, family); p != nil {
+			f.Evidence["inflated_profile"], f.Evidence["inflation"] = p.name, math.Round(r*1000)/1000
+			f.Status, f.Summary = StatusFail, fmt.Sprintf("usage is the %s tokenizer inflated by %d%%: the channel overbills every request", p.name, int(math.Round((r-1)*100)))
+			break
+		}
 		f.Status, f.Summary = StatusFail, fmt.Sprintf("usage matches no known %s tokenizer (closest %s differs on %d of %d texts): another model serves this name", family, closest.name, closestMiss, len(valid))
 	}
 	return f
