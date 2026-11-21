@@ -32,9 +32,22 @@ The key is read from an environment variable and is only sent to the endpoint
 under test. A run sends 29 short requests (`--repeats 3`: five prompts three
 times, then 14 tokenizer prompts once).
 
+Requests that fail with HTTP 429, 500, 502, 503, 504 or a timeout are repeated
+up to `--retries` times (default `2`; `--retries 0` sends every request once).
+The pause before a retry follows the endpoint's `Retry-After` header, otherwise
+1s, 2s, ...; it never exceeds `--max-wait` (default `30s`), and a `Retry-After`
+longer than that ends the retries for that request. Other 4xx errors are not
+retried. Requests are still sent one at a time, never in parallel. The report
+shows how many retries were made; a request that succeeded on a retry is an
+ordinary sample, and one that ran out of retries is listed under failed
+requests with its last HTTP status.
+
+Ctrl-C stops the run and prints the report for the requests answered so far,
+marked as interrupted; the request in flight is dropped.
+
 Exit codes: `0` no failed checks, `1` usage error or no request succeeded
-(verdict `error`, failed requests are listed in the report), `2` at least one
-check failed.
+(verdict `error`, failed requests are listed in the report; also after Ctrl-C
+before the first answer), `2` at least one check failed.
 
 ## What is checked today
 
@@ -73,7 +86,8 @@ GPT-4 sold as a new GPT fails; it cannot tell tiers that share a tokenizer
   claimed model reports `skip`, never `fail`.
 - Transport and upstream errors (429, 5xx, timeouts) are never counted as
   evidence of substitution. They are reported, and a run in which no request
-  succeeded ends with verdict `error` instead of a silent pass.
+  succeeded ends with verdict `error` instead of a silent pass. Retries are not
+  evidence either: no check reads them, they are only counted in the report.
 
 ## Prior art
 

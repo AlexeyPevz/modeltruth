@@ -13,20 +13,26 @@ type Sender interface {
 }
 
 // SampleError is one request that did not produce a usable response.
+// HTTPStatus is the status of the last attempt.
 type SampleError struct {
 	Probe      string `json:"probe"`
 	HTTPStatus int    `json:"http_status,omitempty"`
+	Retries    int    `json:"retries,omitempty"`
 	Error      string `json:"error"`
 }
 
-// Report is the outcome of one run against one model.
+// Report is the outcome of one run against one model. Retries is the total
+// number of repeated attempts across all requests; Interrupted is set when
+// the run was cancelled and the report covers only the requests answered so far.
 type Report struct {
-	Model      string        `json:"model"`
-	Verdict    Status        `json:"verdict"`
-	Requests   int           `json:"requests"`
-	Successful int           `json:"successful"`
-	Errors     []SampleError `json:"errors,omitempty"`
-	Findings   []Finding     `json:"findings"`
+	Model       string        `json:"model"`
+	Verdict     Status        `json:"verdict"`
+	Requests    int           `json:"requests"`
+	Successful  int           `json:"successful"`
+	Retries     int           `json:"retries,omitempty"`
+	Interrupted bool          `json:"interrupted,omitempty"`
+	Errors      []SampleError `json:"errors,omitempty"`
+	Findings    []Finding     `json:"findings"`
 }
 
 // Run sends the tiny, medium and TaskProbes task prompts repeats times each,
@@ -61,15 +67,17 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 			if ctx.Err() != nil {
 				break
 			}
-			resp, err := s.Send(ctx, probe.Request{User: p.text, MaxTokens: drawOutputLimit()})
-			samples = append(samples, Sample{Probe: p.name, PromptChars: len(p.text), Response: resp, Err: err})
+			if sample, ok := send(ctx, s, p.name, p.text); ok {
+				samples = append(samples, sample)
+			}
 		}
 	}
 	samples = append(samples, tokenizerRun(ctx, s)...)
-	rep := Report{Model: claimedModel, Requests: len(samples)}
+	rep := Report{Model: claimedModel, Requests: len(samples), Interrupted: ctx.Err() != nil}
 	for _, sample := range samples {
+		rep.Retries += sample.Response.Retries
 		if sample.Err != nil {
-			rep.Errors = append(rep.Errors, SampleError{Probe: sample.Probe, HTTPStatus: sample.Response.HTTPStatus, Error: sample.Err.Error()})
+			rep.Errors = append(rep.Errors, SampleError{Probe: sample.Probe, HTTPStatus: sample.Response.HTTPStatus, Retries: sample.Response.Retries, Error: sample.Err.Error()})
 			continue
 		}
 		rep.Successful++
@@ -105,10 +113,21 @@ func tokenizerRun(ctx context.Context, s Sender) []Sample {
 		if ctx.Err() != nil {
 			break
 		}
-		resp, err := s.Send(ctx, probe.Request{User: p.text, MaxTokens: drawOutputLimit()})
-		out = append(out, Sample{Probe: p.name, PromptChars: len(p.text), Response: resp, Err: err})
+		if sample, ok := send(ctx, s, p.name, p.text); ok {
+			out = append(out, sample)
+		}
 	}
 	return out
+}
+
+// send sends one probe prompt. A request that failed because the run was
+// cancelled says nothing about the endpoint, so it is dropped (ok false).
+func send(ctx context.Context, s Sender, name, text string) (Sample, bool) {
+	resp, err := s.Send(ctx, probe.Request{User: text, MaxTokens: drawOutputLimit()})
+	if err != nil && ctx.Err() != nil {
+		return Sample{}, false
+	}
+	return Sample{Probe: name, PromptChars: len(text), Response: resp, Err: err}, true
 }
 
 // Verdict is the worst status among findings; skips count only when nothing
