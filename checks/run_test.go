@@ -187,3 +187,43 @@ func TestRunPromptVariation(t *testing.T) {
 		}
 	})
 }
+
+func TestRunRetriesAndInterrupt(t *testing.T) {
+	t.Run("retries are counted but do not change the verdict", func(t *testing.T) {
+		s := &fakeSender{responses: func(i int, req probe.Request) (probe.Response, error) {
+			r := probe.Response{HTTPStatus: 200, ID: "msg_01MzmDFUhapVJeHMhAUX2ZwC", Model: "claude-sonnet-5", Text: "ok", Usage: probe.Usage{InputTokens: cleanInput(req), OutputTokens: 1}}
+			switch i {
+			case 0:
+				r.Retries = 2
+			case 1:
+				return probe.Response{HTTPStatus: 429, Retries: 2}, errors.New("probe: HTTP 429: rate")
+			}
+			return r, nil
+		}}
+		rep := Run(context.Background(), s, "claude-sonnet-5", 3)
+		if rep.Verdict != StatusPass || rep.Retries != 4 || rep.Interrupted {
+			t.Errorf("verdict %q, retries %d, interrupted %v; want pass, 4, false", rep.Verdict, rep.Retries, rep.Interrupted)
+		}
+		if len(rep.Errors) != 1 || rep.Errors[0].HTTPStatus != 429 || rep.Errors[0].Retries != 2 {
+			t.Errorf("errors = %+v, want one 429 after 2 retries", rep.Errors)
+		}
+	})
+	t.Run("a cancelled run reports only the requests already answered", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s := &fakeSender{responses: func(i int, req probe.Request) (probe.Response, error) {
+			if i == 3 {
+				cancel()
+				return probe.Response{}, context.Canceled
+			}
+			return probe.Response{HTTPStatus: 200, Text: "ok", Usage: probe.Usage{InputTokens: cleanInput(req), OutputTokens: 1}}, nil
+		}}
+		rep := Run(ctx, s, "m", 3)
+		if len(s.calls) != 4 {
+			t.Errorf("calls = %d, want 4: nothing may be sent after the cancel", len(s.calls))
+		}
+		if !rep.Interrupted || rep.Requests != 3 || rep.Successful != 3 || len(rep.Errors) != 0 {
+			t.Errorf("interrupted %v, requests %d, successful %d, errors %+v; want true, 3, 3, none", rep.Interrupted, rep.Requests, rep.Successful, rep.Errors)
+		}
+	})
+}

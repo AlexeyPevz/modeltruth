@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,6 +27,10 @@ const (
 // maxBodyBytes bounds how much of a response is read; probes ask for short
 // answers, so anything larger is itself suspicious and not worth buffering.
 const maxBodyBytes = 1 << 20
+
+// DefaultMaxWait caps the pause before one retry when Endpoint.MaxWait is
+// zero.
+const DefaultMaxWait = 30 * time.Second
 
 // Request is one probe prompt.
 type Request struct {
@@ -42,7 +48,8 @@ type Usage struct {
 	CachedTokens int64
 }
 
-// Response is the normalized result of one request.
+// Response is the normalized result of one request. HTTPStatus and Latency
+// describe the last attempt; Retries counts the attempts before it.
 type Response struct {
 	HTTPStatus int
 	ID         string
@@ -50,6 +57,7 @@ type Response struct {
 	Text       string
 	Usage      Usage
 	Latency    time.Duration
+	Retries    int
 }
 
 // Endpoint is an API under test.
@@ -59,10 +67,18 @@ type Endpoint struct {
 	Model    string
 	Protocol Protocol
 	HTTP     *http.Client
+	// Retries is how many times a request is repeated after HTTP 429, 500,
+	// 502, 503, 504 or a timeout. Zero sends every request once.
+	Retries int
+	// MaxWait caps the pause before a retry (DefaultMaxWait when zero). A
+	// Retry-After longer than MaxWait ends the retries instead of being cut
+	// short, so the endpoint is never asked again earlier than it allowed.
+	MaxWait time.Duration
 }
 
-// Send performs one request. A non-2xx status is returned as an error that
-// still carries the HTTP status in the response.
+// Send performs one request, repeating it up to Retries times on transient
+// failures. A non-2xx status is returned as an error that still carries the
+// HTTP status of the last attempt in the response.
 func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 	client := e.HTTP
 	if client == nil {
@@ -72,9 +88,40 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	maxWait := e.MaxWait
+	if maxWait <= 0 {
+		maxWait = DefaultMaxWait
+	}
+	for attempt := 0; ; attempt++ {
+		out, retryAfter, err := e.sendOnce(ctx, client, url, body, headers)
+		out.Retries = attempt
+		if err == nil || attempt >= e.Retries || !retryable(ctx, out.HTTPStatus, err) {
+			return out, err
+		}
+		wait := backoff(attempt, maxWait)
+		if retryAfter >= 0 {
+			if retryAfter > maxWait {
+				return out, fmt.Errorf("%w (Retry-After %s exceeds max wait %s)", err, retryAfter, maxWait)
+			}
+			wait = retryAfter
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return out, fmt.Errorf("%w (retry interrupted: %v)", err, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// sendOnce performs a single attempt. retryAfter is the parsed Retry-After
+// header, or -1 when the response has none.
+func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string, body []byte, headers map[string]string) (out Response, retryAfter time.Duration, err error) {
+	retryAfter = -1
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return Response{}, err
+		return Response{}, retryAfter, err
 	}
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
@@ -82,16 +129,19 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 	start := time.Now()
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return Response{}, err
+		return Response{}, retryAfter, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		return Response{HTTPStatus: resp.StatusCode}, err
+		return Response{HTTPStatus: resp.StatusCode}, retryAfter, err
 	}
-	out := Response{HTTPStatus: resp.StatusCode, Latency: time.Since(start)}
+	out = Response{HTTPStatus: resp.StatusCode, Latency: time.Since(start)}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return out, fmt.Errorf("probe: HTTP %d: %s", resp.StatusCode, snippet(raw))
+		return out, retryAfter, fmt.Errorf("probe: HTTP %d: %s", resp.StatusCode, snippet(raw))
 	}
 	switch e.Protocol {
 	case ProtocolAnthropic:
@@ -99,7 +149,57 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 	default:
 		err = parseOpenAI(raw, &out)
 	}
-	return out, err
+	return out, retryAfter, err
+}
+
+// retryable reports whether a failed attempt is worth repeating: rate limits,
+// gateway-type 5xx and timeouts. A cancelled run and other 4xx or 5xx never
+// are, even when reading their body timed out.
+func retryable(ctx context.Context, status int, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	if status >= 400 {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// backoff is the pause before retry attempt+1 when the endpoint gave no
+// Retry-After: 1s, 2s, 4s, ... capped at maxWait.
+func backoff(attempt int, maxWait time.Duration) time.Duration {
+	if attempt > 10 {
+		return maxWait
+	}
+	return min(time.Second<<attempt, maxWait)
+}
+
+// parseRetryAfter reads a Retry-After value in delay-seconds or HTTP-date
+// form; it returns -1 when the header is absent or malformed.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return -1
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs < 0 {
+			return -1
+		}
+		if secs > int64(24*time.Hour/time.Second) {
+			secs = int64(24 * time.Hour / time.Second)
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if at, err := http.ParseTime(v); err == nil {
+		return max(at.Sub(now), 0)
+	}
+	return -1
 }
 
 func (e Endpoint) build(req Request) (string, []byte, map[string]string, error) {
