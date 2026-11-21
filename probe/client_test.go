@@ -235,3 +235,48 @@ func TestParseRetryAfter(t *testing.T) {
 		}
 	}
 }
+
+// TestSendBodyTimeout covers responses whose headers arrive but whose body
+// stalls past the client timeout.
+func TestSendBodyTimeout(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		retryAfter string
+		wantCalls  int64
+		wantErr    string
+	}{
+		{"permanent 4xx is not retried", 400, "", 1, ""},
+		{"permanent 501 is not retried", 501, "", 1, ""},
+		{"Retry-After beyond max wait still stops retrying", 503, "120", 1, "exceeds max wait"},
+		{"retryable status is retried", 503, "0", 2, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				if tt.retryAfter != "" {
+					w.Header().Set("Retry-After", tt.retryAfter)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"error":`))
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(5 * time.Second):
+				}
+			}))
+			defer srv.Close()
+			ep := Endpoint{BaseURL: srv.URL, APIKey: "k", Model: "m", Retries: 1, MaxWait: 20 * time.Millisecond, HTTP: &http.Client{Timeout: 100 * time.Millisecond}}
+			got, err := ep.Send(context.Background(), Request{User: "u"})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want one containing %q", err, tt.wantErr)
+			}
+			if calls.Load() != tt.wantCalls || got.HTTPStatus != tt.status {
+				t.Errorf("requests = %d, status = %d, want %d and %d", calls.Load(), got.HTTPStatus, tt.wantCalls, tt.status)
+			}
+		})
+	}
+}

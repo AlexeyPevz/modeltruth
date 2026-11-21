@@ -132,13 +132,16 @@ func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string,
 		return Response{}, retryAfter, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		return Response{HTTPStatus: resp.StatusCode}, retryAfter, err
 	}
 	out = Response{HTTPStatus: resp.StatusCode, Latency: time.Since(start)}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return out, parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()), fmt.Errorf("probe: HTTP %d: %s", resp.StatusCode, snippet(raw))
+		return out, retryAfter, fmt.Errorf("probe: HTTP %d: %s", resp.StatusCode, snippet(raw))
 	}
 	switch e.Protocol {
 	case ProtocolAnthropic:
@@ -150,7 +153,8 @@ func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string,
 }
 
 // retryable reports whether a failed attempt is worth repeating: rate limits,
-// gateway-type 5xx and timeouts. A cancelled run and other 4xx never are.
+// gateway-type 5xx and timeouts. A cancelled run and other 4xx or 5xx never
+// are, even when reading their body timed out.
 func retryable(ctx context.Context, status int, err error) bool {
 	if ctx.Err() != nil {
 		return false
@@ -159,6 +163,9 @@ func retryable(ctx context.Context, status int, err error) bool {
 	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
 		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
+	}
+	if status >= 400 {
+		return false
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
