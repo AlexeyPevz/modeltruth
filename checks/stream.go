@@ -194,31 +194,30 @@ func anthropicOrderProblem(events []string) string {
 	return ""
 }
 
-// openAIOrderProblem checks content chunks, usage in the final chunk when
-// the stream reports usage at all, and a closing [DONE]. Usage repeated on
-// earlier chunks is tolerated as long as the final chunk carries it.
+// openAIOrderProblem checks content chunks, usage on the last non-empty
+// chunk when the stream reports usage at all, and a closing [DONE]. Usage
+// repeated on earlier chunks is tolerated as long as no content follows the
+// last usage.
 func openAIOrderProblem(events []string) string {
-	content, usage := false, false
-	last := ""
+	content, usage, usageLast := false, false, false
 	for i, ev := range events {
-		if ev == "[DONE]" {
+		switch ev {
+		case "[DONE]":
 			if i != len(events)-1 {
 				return "chunks after [DONE]"
 			}
-			continue
+		case "chunk":
+			content, usageLast = true, false
+		case "chunk+usage":
+			content, usage, usageLast = true, true, true
+		case "usage":
+			usage, usageLast = true, true
 		}
-		if ev == "chunk" || ev == "chunk+usage" {
-			content = true
-		}
-		if ev == "usage" || ev == "chunk+usage" {
-			usage = true
-		}
-		last = ev
 	}
 	switch {
 	case !content:
 		return "no content chunks"
-	case usage && last == "chunk":
+	case usage && !usageLast:
 		return "usage did not arrive in the final chunk"
 	case events[len(events)-1] != "[DONE]":
 		return "the stream does not end with [DONE]"

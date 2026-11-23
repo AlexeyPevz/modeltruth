@@ -151,6 +151,19 @@ func TestStreamShape(t *testing.T) {
 				return []string{"data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n", ev[2], ev[3]}
 			}),
 		}, StatusFail},
+		{"openai: usage before content and a trailing empty frame twice fails", probe.ProtocolOpenAI, []string{
+			fixture(openAIEvents, func(ev []string) []string {
+				return []string{ev[0], ev[2], ev[1], "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n", ev[3]}
+			}),
+			fixture(openAIEvents, func(ev []string) []string {
+				return []string{ev[0], ev[2], ev[1], "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n", ev[3]}
+			}),
+		}, StatusFail},
+		{"openai: empty frame after usage passes", probe.ProtocolOpenAI, []string{
+			fixture(openAIEvents, func(ev []string) []string {
+				return []string{ev[0], ev[1], ev[2], "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n", ev[3]}
+			}), okO,
+		}, StatusPass},
 		{"openai: empty frames after [DONE] twice fail", probe.ProtocolOpenAI, []string{
 			fixture(openAIEvents, func(ev []string) []string { return append(ev, "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n") }),
 			fixture(openAIEvents, func(ev []string) []string { return append(ev, "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n") }),
