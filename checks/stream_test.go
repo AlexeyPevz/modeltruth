@@ -106,6 +106,12 @@ func TestStreamShape(t *testing.T) {
 		want     Status
 	}{
 		{"anthropic: well-formed streams pass", probe.ProtocolAnthropic, []string{okA, okA}, StatusPass},
+		{"anthropic: ping and unknown events anywhere pass", probe.ProtocolAnthropic, []string{
+			fixture(anthropicEvents, func(ev []string) []string {
+				odd := "event: \x1b[2Jvendor_note\ndata: {\"type\":\"\x1b[2Jvendor_note\"}\n\n"
+				return append(append([]string{odd, ev[2]}, ev...), ev[2], odd)
+			}), okA,
+		}, StatusPass},
 		{"anthropic: missing message_stop once warns", probe.ProtocolAnthropic, []string{fixture(anthropicEvents, without(7)), okA}, StatusWarn},
 		{"anthropic: missing message_stop twice fails", probe.ProtocolAnthropic, []string{fixture(anthropicEvents, without(7)), fixture(anthropicEvents, without(7))}, StatusFail},
 		{"anthropic: missing message_start twice fails", probe.ProtocolAnthropic, []string{fixture(anthropicEvents, without(0)), fixture(anthropicEvents, without(0))}, StatusFail},

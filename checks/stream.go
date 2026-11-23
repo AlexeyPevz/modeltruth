@@ -121,6 +121,14 @@ func streamOrderProblem(st *probe.Stream) string {
 	}
 }
 
+// anthropicEventTypes are the event types whose order is checked; ping and
+// anything else may appear anywhere. Problems therefore never quote an event
+// type the endpoint made up.
+var anthropicEventTypes = map[string]bool{
+	"message_start": true, "content_block_start": true, "content_block_delta": true,
+	"content_block_stop": true, "message_delta": true, "message_stop": true,
+}
+
 // anthropicOrderProblem checks message_start, then one or more
 // content_block_start / content_block_delta... / content_block_stop
 // sequences, then message_delta and message_stop. ping may appear anywhere
@@ -129,10 +137,13 @@ func anthropicOrderProblem(events []string) string {
 	var started, inBlock, delta, stopped bool
 	blocks := 0
 	for _, ev := range events {
+		if !anthropicEventTypes[ev] {
+			continue
+		}
 		if stopped {
 			return fmt.Sprintf("%s after message_stop", ev)
 		}
-		if !started && ev != "ping" && ev != "message_start" {
+		if !started && ev != "message_start" {
 			return fmt.Sprintf("%s before message_start", ev)
 		}
 		switch ev {
