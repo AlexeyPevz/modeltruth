@@ -86,7 +86,8 @@ Layer 1 and the tokenizer part of layer 3 ship. The others are in development.
   Anthropic) must match a non-streamed tiny request within the
   `channel_consistency` spread (10% and 20 tokens); a relay that sends streams
   to another channel, or estimates streaming usage instead of reading it, shows
-  up here. Following the layer 1 policy of two consecutive failures, a broken
+  up here; `channel_consistency` leaves the stream probes to this check.
+  Following the layer 1 policy of two consecutive failures, a broken
   order or a usage mismatch in one stream warns, the same in both streams
   fails. A JSON body in answer to a stream request counts as a broken order. A
   stream without input usage only warns: many OpenAI-compatible servers ignore
