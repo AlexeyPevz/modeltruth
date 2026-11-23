@@ -2,6 +2,7 @@ package probe
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -15,46 +16,67 @@ type sseEvent struct {
 // or CR and multi-line data is joined with newlines, as the SSE
 // specification requires. An event is dispatched only by the blank line
 // after it: one left pending at the end of the body is discarded, so a
-// stream cut off inside its final event never looks complete.
-func parseSSE(raw []byte) []sseEvent {
+// stream cut off inside its final event never looks complete. A pending
+// event that is not even whole ([DONE] or valid JSON data) means the body
+// was cut off mid-event, which is reported as an error.
+func parseSSE(raw []byte) ([]sseEvent, error) {
 	var (
-		out  []sseEvent
-		name string
-		data []string
+		out     []sseEvent
+		name    string
+		data    []string
+		pending bool
 	)
 	flush := func() {
 		if len(data) > 0 {
 			out = append(out, sseEvent{name: name, data: strings.Join(data, "\n")})
 		}
-		name, data = "", nil
+		name, data, pending = "", nil, false
 	}
-	body := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(raw))
-	lines := strings.Split(body, "\n")
-	// The last element follows the last line ending: it is not a line.
-	for _, line := range lines[:len(lines)-1] {
-		if line == "" {
-			flush()
-			continue
-		}
+	field := func(line string) {
 		if strings.HasPrefix(line, ":") {
-			continue
+			return
 		}
-		field, value, _ := strings.Cut(line, ":")
+		pending = true
+		key, value, _ := strings.Cut(line, ":")
 		value = strings.TrimPrefix(value, " ")
-		switch field {
+		switch key {
 		case "event":
 			name = value
 		case "data":
 			data = append(data, value)
 		}
 	}
-	return out
+	body := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(raw))
+	lines := strings.Split(body, "\n")
+	for _, line := range lines[:len(lines)-1] {
+		if line == "" {
+			flush()
+			continue
+		}
+		field(line)
+	}
+	// The last element follows the last line ending: not a line, but part
+	// of the pending event.
+	if tail := lines[len(lines)-1]; tail != "" {
+		field(tail)
+	}
+	if pending {
+		d := strings.Join(data, "\n")
+		if len(data) == 0 || (strings.TrimSpace(d) != "[DONE]" && !json.Valid([]byte(d))) {
+			return nil, errors.New("probe: stream cut off inside an event")
+		}
+	}
+	return out, nil
 }
 
 // parseStream fills out from an event stream. An error event inside the
-// stream is returned as an error: it is an upstream failure, not a shape.
+// stream or a body cut off mid-event is returned as an error: it is an
+// upstream failure, not a shape.
 func (e Endpoint) parseStream(raw []byte, out *Response) error {
-	events := parseSSE(raw)
+	events, err := parseSSE(raw)
+	if err != nil {
+		return err
+	}
 	if e.protocol() == ProtocolAnthropic {
 		return parseAnthropicStream(events, out)
 	}

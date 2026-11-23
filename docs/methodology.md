@@ -91,9 +91,13 @@ Layer 1 and the tokenizer part of layer 3 ship. The others are in development.
   order or a usage mismatch in one stream warns, the same in both streams
   fails. A JSON body in answer to a stream request counts as a broken order. A
   stream without input usage only warns: many OpenAI-compatible servers ignore
-  `include_usage`. An `error` event inside the stream, a stalled or oversized
-  stream and HTTP errors are transport errors: they are listed under failed
-  requests and never count toward `fail`.
+  `include_usage`. A final event without the blank line after it is
+  discarded, as SSE clients do, so a stream whose `[DONE]` or `message_stop`
+  is left unterminated has a broken order. An `error` event inside the
+  stream, a body cut off inside an event (data that is neither `[DONE]` nor
+  whole JSON), a stalled or oversized stream and HTTP errors are transport
+  errors: they are listed under failed requests and never count toward
+  `fail`.
 
 ## Layer 3: tokenizer
 

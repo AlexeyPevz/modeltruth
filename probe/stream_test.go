@@ -242,3 +242,35 @@ func TestSendStreamDiscardsUnterminatedFinalEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestSendStreamCutInsideEventIsAnError(t *testing.T) {
+	openAIBody := strings.TrimSuffix(openAIStream, "data: [DONE]\n\n")
+	anthropicBody := strings.TrimSuffix(anthropicStream, "\r\n\r\n")
+	tests := []struct {
+		name     string
+		protocol Protocol
+		body     string
+	}{
+		{"openai: mid-JSON usage chunk", ProtocolOpenAI, strings.TrimSuffix(openAIBody, "\n\n")[:len(openAIBody)-8]},
+		{"openai: mid [DONE]", ProtocolOpenAI, openAIBody + "data: [DO"},
+		{"anthropic: mid-JSON message_stop", ProtocolAnthropic, anthropicBody[:len(anthropicBody)-5]},
+		{"anthropic: message_stop without data", ProtocolAnthropic, strings.TrimSuffix(anthropicBody[:strings.LastIndex(anthropicBody, "data: ")], "\r\n")},
+	}
+	for _, tt := range tests {
+		for _, ending := range []string{"", "\n", "\r\n"} {
+			t.Run(fmt.Sprintf("%s %q", tt.name, ending), func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte(tt.body + ending))
+				}))
+				defer srv.Close()
+				ep := Endpoint{BaseURL: srv.URL, APIKey: "k", Model: "m", Protocol: tt.protocol}
+				_, err := ep.Send(context.Background(), Request{User: "u", Stream: true})
+				if err == nil || !strings.Contains(err.Error(), "cut off inside an event") {
+					t.Fatalf("Send error = %v, want a cut-off stream error", err)
+				}
+			})
+		}
+	}
+}
