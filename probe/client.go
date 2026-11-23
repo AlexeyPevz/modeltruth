@@ -37,6 +37,9 @@ type Request struct {
 	System    string
 	User      string
 	MaxTokens int
+	// Stream asks for a server-sent event stream (with usage, on OpenAI via
+	// stream_options.include_usage); Response.Stream then describes it.
+	Stream bool
 }
 
 // Usage holds token counts as reported by the endpoint. InputTokens is the
@@ -46,6 +49,19 @@ type Usage struct {
 	InputTokens  int64
 	OutputTokens int64
 	CachedTokens int64
+}
+
+// Stream describes a streamed response. Events lists the event types in
+// arrival order: the Anthropic "type" of each event, or for OpenAI "chunk"
+// (choices only), "usage" (usage only), "chunk+usage" (both) and "[DONE]".
+// Usage is set when the stream reported the input size, which is what
+// checks compare against non-streamed requests. JSON is set
+// when the endpoint answered the stream request with a plain JSON body.
+type Stream struct {
+	Protocol Protocol
+	Events   []string
+	Usage    bool
+	JSON     bool
 }
 
 // Response is the normalized result of one request. HTTPStatus and Latency
@@ -58,6 +74,8 @@ type Response struct {
 	Usage      Usage
 	Latency    time.Duration
 	Retries    int
+	// Stream is set for stream requests only.
+	Stream *Stream
 }
 
 // Endpoint is an API under test.
@@ -93,7 +111,7 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 		maxWait = DefaultMaxWait
 	}
 	for attempt := 0; ; attempt++ {
-		out, retryAfter, err := e.sendOnce(ctx, client, url, body, headers)
+		out, retryAfter, err := e.sendOnce(ctx, client, url, body, headers, req.Stream)
 		out.Retries = attempt
 		if err == nil || attempt >= e.Retries || !retryable(ctx, out.HTTPStatus, err) {
 			return out, err
@@ -117,7 +135,7 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 
 // sendOnce performs a single attempt. retryAfter is the parsed Retry-After
 // header, or -1 when the response has none.
-func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string, body []byte, headers map[string]string) (out Response, retryAfter time.Duration, err error) {
+func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string, body []byte, headers map[string]string, stream bool) (out Response, retryAfter time.Duration, err error) {
 	retryAfter = -1
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -143,13 +161,29 @@ func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string,
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return out, retryAfter, fmt.Errorf("probe: HTTP %d: %s", resp.StatusCode, snippet(raw))
 	}
+	if stream && !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		if len(raw) >= maxBodyBytes {
+			return out, retryAfter, fmt.Errorf("probe: stream exceeds %d bytes", maxBodyBytes)
+		}
+		return out, retryAfter, e.parseStream(raw, &out)
+	}
 	switch e.Protocol {
 	case ProtocolAnthropic:
 		err = parseAnthropic(raw, &out)
 	default:
 		err = parseOpenAI(raw, &out)
 	}
+	if stream {
+		out.Stream = &Stream{Protocol: e.protocol(), JSON: true, Usage: out.Usage.InputTokens > 0}
+	}
 	return out, retryAfter, err
+}
+
+func (e Endpoint) protocol() Protocol {
+	if e.Protocol == ProtocolAnthropic {
+		return ProtocolAnthropic
+	}
+	return ProtocolOpenAI
 }
 
 // retryable reports whether a failed attempt is worth repeating: rate limits,
@@ -225,6 +259,9 @@ func (e Endpoint) build(req Request) (string, []byte, map[string]string, error) 
 		if req.System != "" {
 			payload["system"] = req.System
 		}
+		if req.Stream {
+			payload["stream"] = true
+		}
 		body, err := json.Marshal(payload)
 		headers["x-api-key"] = e.APIKey
 		headers["anthropic-version"] = "2023-06-01"
@@ -235,11 +272,47 @@ func (e Endpoint) build(req Request) (string, []byte, map[string]string, error) 
 			messages = append(messages, map[string]any{"role": "system", "content": req.System})
 		}
 		messages = append(messages, map[string]any{"role": "user", "content": req.User})
-		body, err := json.Marshal(map[string]any{"model": e.Model, "max_tokens": maxTokens, "messages": messages})
+		payload := map[string]any{"model": e.Model, "max_tokens": maxTokens, "messages": messages}
+		if req.Stream {
+			payload["stream"] = true
+			payload["stream_options"] = map[string]any{"include_usage": true}
+		}
+		body, err := json.Marshal(payload)
 		headers["Authorization"] = "Bearer " + e.APIKey
 		return base + "/chat/completions", body, headers, err
 	default:
 		return "", nil, nil, fmt.Errorf("probe: unknown protocol %q", e.Protocol)
+	}
+}
+
+type openAIUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+func (u openAIUsage) usage() Usage {
+	return Usage{
+		InputTokens:  u.PromptTokens,
+		OutputTokens: u.CompletionTokens,
+		CachedTokens: u.PromptTokensDetails.CachedTokens,
+	}
+}
+
+type anthropicUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+}
+
+func (u anthropicUsage) usage() Usage {
+	return Usage{
+		InputTokens:  u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
+		OutputTokens: u.OutputTokens,
+		CachedTokens: u.CacheReadInputTokens,
 	}
 }
 
@@ -252,13 +325,7 @@ func parseOpenAI(raw []byte, out *Response) error {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
-		Usage struct {
-			PromptTokens        int64 `json:"prompt_tokens"`
-			CompletionTokens    int64 `json:"completion_tokens"`
-			PromptTokensDetails struct {
-				CachedTokens int64 `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-		} `json:"usage"`
+		Usage openAIUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return fmt.Errorf("probe: decode OpenAI response: %w", err)
@@ -267,11 +334,7 @@ func parseOpenAI(raw []byte, out *Response) error {
 	if len(d.Choices) > 0 {
 		out.Text = d.Choices[0].Message.Content
 	}
-	out.Usage = Usage{
-		InputTokens:  d.Usage.PromptTokens,
-		OutputTokens: d.Usage.CompletionTokens,
-		CachedTokens: d.Usage.PromptTokensDetails.CachedTokens,
-	}
+	out.Usage = d.Usage.usage()
 	return nil
 }
 
@@ -283,12 +346,7 @@ func parseAnthropic(raw []byte, out *Response) error {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		Usage struct {
-			InputTokens              int64 `json:"input_tokens"`
-			OutputTokens             int64 `json:"output_tokens"`
-			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-		} `json:"usage"`
+		Usage anthropicUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return fmt.Errorf("probe: decode Anthropic response: %w", err)
@@ -301,11 +359,7 @@ func parseAnthropic(raw []byte, out *Response) error {
 		}
 	}
 	out.Text = text.String()
-	out.Usage = Usage{
-		InputTokens:  d.Usage.InputTokens + d.Usage.CacheCreationInputTokens + d.Usage.CacheReadInputTokens,
-		OutputTokens: d.Usage.OutputTokens,
-		CachedTokens: d.Usage.CacheReadInputTokens,
-	}
+	out.Usage = d.Usage.usage()
 	return nil
 }
 

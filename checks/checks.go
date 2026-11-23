@@ -56,6 +56,12 @@ const (
 	channelSpreadTokens = 20
 )
 
+// spreadTooWide reports whether two input counts of identical requests
+// differ by more than channelSpreadRatio and channelSpreadTokens.
+func spreadTooWide(lo, hi int64) bool {
+	return float64(hi) > float64(lo)*channelSpreadRatio && hi-lo > channelSpreadTokens
+}
+
 // usageFloorCharsPerToken is a deliberately loose bound: English text never
 // tokenizes to fewer than one token per six characters.
 const usageFloorCharsPerToken = 6
@@ -172,7 +178,7 @@ func ChannelConsistency(samples []Sample) Finding {
 		for _, c := range counts {
 			lo, hi = min(lo, c), max(hi, c)
 		}
-		if float64(hi) > float64(lo)*channelSpreadRatio && hi-lo > channelSpreadTokens && worst == "" {
+		if spreadTooWide(lo, hi) && worst == "" {
 			worst = fmt.Sprintf("identical %s prompts were billed as %d to %d input tokens: requests reach different upstream channels", name, lo, hi)
 		}
 	}
