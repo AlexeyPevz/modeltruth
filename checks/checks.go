@@ -168,6 +168,9 @@ func ChannelConsistency(samples []Sample) Finding {
 	compared := 0
 	var worst string
 	for _, name := range probeNames(samples) {
+		if name == ProbeStream {
+			continue // stream_shape compares streams with the non-streamed tiny prompt
+		}
 		counts := inputs(ok(samples, name))
 		if len(counts) < 2 {
 			continue

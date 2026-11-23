@@ -183,3 +183,11 @@ func TestCompactEvents(t *testing.T) {
 		t.Errorf("compactEvents = %q, want %q", got, want)
 	}
 }
+
+func TestChannelConsistencyLeavesStreamsToStreamShape(t *testing.T) {
+	samples := streamSamples(t, probe.ProtocolAnthropic,
+		fixture(anthropicEvents, nil), fixture(anthropicEvents, replace(`"input_tokens":14`, `"input_tokens":4400`)))
+	if got := ChannelConsistency(samples); got.Status != StatusPass {
+		t.Errorf("channel_consistency = %q, want pass: one divergent stream only warns in stream_shape (%s)", got.Status, got.Summary)
+	}
+}
