@@ -107,6 +107,13 @@ func TestSendStream(t *testing.T) {
 			wantUsage:  true,
 		},
 		{
+			name:       "CR line endings",
+			protocol:   ProtocolOpenAI,
+			body:       "data: {\"id\":\"c\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\r\rdata: [DONE]\r\r",
+			want:       Response{ID: "c", Model: "m", Text: "ok"},
+			wantEvents: []string{"chunk", "[DONE]"},
+		},
+		{
 			name:     "malformed chunk is an error",
 			protocol: ProtocolOpenAI,
 			body:     "data: {\"id\":\n\n",

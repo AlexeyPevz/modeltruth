@@ -11,8 +11,9 @@ type sseEvent struct {
 }
 
 // parseSSE splits a server-sent event body into events. Comment lines and
-// fields other than event and data are ignored; multi-line data is joined
-// with newlines as the SSE specification requires.
+// fields other than event and data are ignored; lines may end in CRLF, LF
+// or CR and multi-line data is joined with newlines, as the SSE
+// specification requires.
 func parseSSE(raw []byte) []sseEvent {
 	var (
 		out  []sseEvent
@@ -25,8 +26,8 @@ func parseSSE(raw []byte) []sseEvent {
 		}
 		name, data = "", nil
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSuffix(line, "\r")
+	body := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(raw))
+	for _, line := range strings.Split(body, "\n") {
 		if line == "" {
 			flush()
 			continue
