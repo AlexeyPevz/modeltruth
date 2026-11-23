@@ -173,6 +173,12 @@ func TestStreamShape(t *testing.T) {
 			fixture(openAIEvents, replace(`"prompt_tokens":14`, `"prompt_tokens":420`)),
 			fixture(openAIEvents, replace(`"prompt_tokens":14`, `"prompt_tokens":420`)),
 		}, StatusFail},
+		{"anthropic: final message_stop with no line ending", probe.ProtocolAnthropic, []string{fixture(anthropicEvents, func(ev []string) []string { ev[7] = strings.TrimSuffix(ev[7], "\n\n") + ""; return ev }), fixture(anthropicEvents, func(ev []string) []string { ev[7] = strings.TrimSuffix(ev[7], "\n\n") + ""; return ev })}, StatusFail},
+		{"anthropic: final message_stop with one line ending", probe.ProtocolAnthropic, []string{fixture(anthropicEvents, func(ev []string) []string { ev[7] = strings.TrimSuffix(ev[7], "\n\n") + "\n"; return ev }), fixture(anthropicEvents, func(ev []string) []string { ev[7] = strings.TrimSuffix(ev[7], "\n\n") + "\n"; return ev })}, StatusFail},
+		{"anthropic: final message_stop with a blank line", probe.ProtocolAnthropic, []string{fixture(anthropicEvents, func(ev []string) []string { ev[7] = strings.TrimSuffix(ev[7], "\n\n") + "\n\n"; return ev }), fixture(anthropicEvents, func(ev []string) []string { ev[7] = strings.TrimSuffix(ev[7], "\n\n") + "\n\n"; return ev })}, StatusPass},
+		{"openai: final [DONE] with no line ending", probe.ProtocolOpenAI, []string{fixture(openAIEvents, func(ev []string) []string { ev[3] = strings.TrimSuffix(ev[3], "\n\n") + ""; return ev }), fixture(openAIEvents, func(ev []string) []string { ev[3] = strings.TrimSuffix(ev[3], "\n\n") + ""; return ev })}, StatusFail},
+		{"openai: final [DONE] with one line ending", probe.ProtocolOpenAI, []string{fixture(openAIEvents, func(ev []string) []string { ev[3] = strings.TrimSuffix(ev[3], "\n\n") + "\n"; return ev }), fixture(openAIEvents, func(ev []string) []string { ev[3] = strings.TrimSuffix(ev[3], "\n\n") + "\n"; return ev })}, StatusFail},
+		{"openai: final [DONE] with a blank line", probe.ProtocolOpenAI, []string{fixture(openAIEvents, func(ev []string) []string { ev[3] = strings.TrimSuffix(ev[3], "\n\n") + "\n\n"; return ev }), fixture(openAIEvents, func(ev []string) []string { ev[3] = strings.TrimSuffix(ev[3], "\n\n") + "\n\n"; return ev })}, StatusPass},
 		{"anthropic: transport errors skip", probe.ProtocolAnthropic, []string{"503", "stall"}, StatusSkip},
 		{"openai: a transport error does not turn a broken stream into a fail", probe.ProtocolOpenAI, []string{"503", fixture(openAIEvents, without(3))}, StatusWarn},
 		{"anthropic: upstream error event is a transport error", probe.ProtocolAnthropic, []string{

@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -206,5 +207,38 @@ func TestSendStreamStallIsATimeout(t *testing.T) {
 	}
 	if got.Stream != nil {
 		t.Errorf("a stalled stream must not produce a stream trace: %+v", got.Stream)
+	}
+}
+
+func TestSendStreamDiscardsUnterminatedFinalEvent(t *testing.T) {
+	tests := []struct {
+		protocol Protocol
+		body     string
+		final    string
+	}{
+		{ProtocolOpenAI, strings.TrimSuffix(openAIStream, "\n\n"), "[DONE]"},
+		{ProtocolAnthropic, strings.TrimSuffix(anthropicStream, "\r\n\r\n"), "message_stop"},
+	}
+	for _, tt := range tests {
+		for _, ending := range []string{"", "\n", "\n\n", "\r\n", "\r\n\r\n"} {
+			t.Run(fmt.Sprintf("%s %q", tt.protocol, ending), func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte(tt.body + ending))
+				}))
+				defer srv.Close()
+				ep := Endpoint{BaseURL: srv.URL, APIKey: "k", Model: "m", Protocol: tt.protocol}
+				got, err := ep.Send(context.Background(), Request{User: "u", Stream: true})
+				if err != nil {
+					t.Fatalf("Send: %v", err)
+				}
+				ev := got.Stream.Events
+				terminated := strings.Count(ending, "\n") == 2
+				if has := len(ev) > 0 && ev[len(ev)-1] == tt.final; has != terminated {
+					t.Errorf("events = %v: final %s kept = %v, want %v (only a blank line dispatches an event)", ev, tt.final, has, terminated)
+				}
+			})
+		}
 	}
 }
