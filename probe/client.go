@@ -53,7 +53,8 @@ type Usage struct {
 
 // Stream describes a streamed response. Events lists the event types in
 // arrival order: the Anthropic "type" of each event, or for OpenAI "chunk"
-// (choices only), "usage" (usage only), "chunk+usage" (both) and "[DONE]".
+// (choices only), "usage" (usage only), "chunk+usage" (both), "empty"
+// (neither) and "[DONE]".
 // Usage is set when the stream reported the input size, which is what
 // checks compare against non-streamed requests. JSON is set
 // when the endpoint answered the stream request with a plain JSON body.

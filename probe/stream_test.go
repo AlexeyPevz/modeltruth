@@ -103,7 +103,7 @@ func TestSendStream(t *testing.T) {
 			protocol:   ProtocolOpenAI,
 			body:       "data: {\"id\":\"c\",\"model\":\"m\",\"choices\":[]}\n\ndata: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":14}}\n\ndata: [DONE]\n\n",
 			want:       Response{ID: "c", Model: "m", Usage: Usage{InputTokens: 14}},
-			wantEvents: []string{"usage", "[DONE]"},
+			wantEvents: []string{"empty", "usage", "[DONE]"},
 			wantUsage:  true,
 		},
 		{

@@ -143,6 +143,18 @@ func TestStreamShape(t *testing.T) {
 		{"openai: missing [DONE] twice fails", probe.ProtocolOpenAI, []string{fixture(openAIEvents, without(3)), fixture(openAIEvents, without(3))}, StatusFail},
 		{"openai: usage before content twice fails", probe.ProtocolOpenAI, []string{fixture(openAIEvents, swap(1, 2)), fixture(openAIEvents, swap(1, 2))}, StatusFail},
 		{"openai: chunks after [DONE] twice fails", probe.ProtocolOpenAI, []string{fixture(openAIEvents, swap(2, 3)), fixture(openAIEvents, swap(2, 3))}, StatusFail},
+		{"openai: frames without choices are not content", probe.ProtocolOpenAI, []string{
+			fixture(openAIEvents, func(ev []string) []string {
+				return []string{"data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n", ev[2], ev[3]}
+			}),
+			fixture(openAIEvents, func(ev []string) []string {
+				return []string{"data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n", ev[2], ev[3]}
+			}),
+		}, StatusFail},
+		{"openai: empty frames after [DONE] twice fail", probe.ProtocolOpenAI, []string{
+			fixture(openAIEvents, func(ev []string) []string { return append(ev, "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n") }),
+			fixture(openAIEvents, func(ev []string) []string { return append(ev, "data: {\"id\":\"chatcmpl-1\",\"choices\":[]}\n\n") }),
+		}, StatusFail},
 		{"openai: stream without usage warns", probe.ProtocolOpenAI, []string{fixture(openAIEvents, without(2)), fixture(openAIEvents, without(2))}, StatusWarn},
 		{"openai: streams billed unlike non-streamed requests fail", probe.ProtocolOpenAI, []string{
 			fixture(openAIEvents, replace(`"prompt_tokens":14`, `"prompt_tokens":420`)),
