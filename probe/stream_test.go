@@ -99,6 +99,14 @@ func TestSendStream(t *testing.T) {
 			wantErr:  "probe: stream error",
 		},
 		{
+			name:       "openai frames without choices or usage are not chunks",
+			protocol:   ProtocolOpenAI,
+			body:       "data: {\"id\":\"c\",\"model\":\"m\",\"choices\":[]}\n\ndata: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":14}}\n\ndata: [DONE]\n\n",
+			want:       Response{ID: "c", Model: "m", Usage: Usage{InputTokens: 14}},
+			wantEvents: []string{"usage", "[DONE]"},
+			wantUsage:  true,
+		},
+		{
 			name:     "malformed chunk is an error",
 			protocol: ProtocolOpenAI,
 			body:     "data: {\"id\":\n\n",

@@ -91,6 +91,9 @@ func parseOpenAIStream(events []sseEvent, out *Response) error {
 		if out.Model == "" {
 			out.Model = c.Model
 		}
+		if len(c.Choices) == 0 && c.Usage == nil {
+			continue
+		}
 		for _, ch := range c.Choices {
 			text.WriteString(ch.Delta.Content)
 		}
