@@ -65,11 +65,13 @@ func signatureRun(ctx context.Context, s Sender, protocol probe.Protocol, claime
 		return nil
 	}
 	prompt := signaturePrompt(city)
-	limit := func() int { return signatureOutputLimits[rand.IntN(len(signatureOutputLimits))] }
 	var out []Sample
 	manual := false
 	for i := 0; i < SignatureProbes && ctx.Err() == nil; i++ {
-		req := probe.Request{User: prompt, MaxTokens: limit(), Signed: true, ManualThinking: manual}
+		// One output limit per round, so a relay that routes by it sends
+		// both replies where the signature was issued.
+		limit := signatureOutputLimits[rand.IntN(len(signatureOutputLimits))]
+		req := probe.Request{User: prompt, MaxTokens: limit, Signed: true, ManualThinking: manual}
 		first, ok := sendRequest(ctx, s, ProbeSignature, req)
 		if !ok {
 			break
@@ -98,7 +100,7 @@ func signatureRun(ctx context.Context, s Sender, protocol probe.Protocol, claime
 			if ctx.Err() != nil {
 				break
 			}
-			if sample, ok := sendRequest(ctx, s, r.name, probe.Request{User: prompt, MaxTokens: limit(), Reply: r.turn}); ok {
+			if sample, ok := sendRequest(ctx, s, r.name, probe.Request{User: prompt, MaxTokens: limit, Reply: r.turn}); ok {
 				out = append(out, sample)
 			}
 		}
