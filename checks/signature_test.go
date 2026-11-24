@@ -27,6 +27,7 @@ const (
 	honestOnce     = "honest_once"     // accepts the forgery in the second round only
 	noToolCall     = "no_tool_call"    // signs but answers in text without a tool call
 	acceptsAnyOnce = "accepts_any_1x"  // accepts the forgery in the first round only
+	errorBody      = "error_body"      // answers sent-back turns with HTTP 200 and an error body
 	manualOnly     = "manual_only"     // refuses adaptive thinking like Claude 4.5, otherwise honest
 	manualUnsigned = "manual_unsigned" // refuses adaptive thinking and answers without a signature
 )
@@ -88,6 +89,9 @@ func (s *signatureServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accept = true
 	case s.mode == rejectsAll:
 		accept = false
+	case s.mode == errorBody:
+		w.Write([]byte(`{"error":{"message":"upstream failed"}}`))
+		return
 	case s.mode == rateLimited:
 		http.Error(w, "slow down", http.StatusTooManyRequests)
 		return
@@ -191,6 +195,7 @@ func TestSignature(t *testing.T) {
 		{mode: honestOnce, want: StatusWarn},
 		{mode: acceptsAnyOnce, want: StatusWarn},
 		{mode: noToolCall, want: StatusSkip},
+		{mode: errorBody, want: StatusSkip},
 	}
 	for _, fam := range families {
 		for _, tt := range tests {

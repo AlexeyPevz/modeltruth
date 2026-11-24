@@ -148,13 +148,14 @@ func signatureRounds(samples []Sample) []signatureRound {
 	return out
 }
 
-// verdictOf is "accepted" (2xx), "rejected" (HTTP 400 or 422) or "" when the
+// verdictOf is "accepted" (2xx with an answer), "rejected" (HTTP 400 or 422) or "" when the
 // request was not sent or failed in transport.
 func verdictOf(s *Sample) string {
 	switch {
 	case s == nil:
 		return ""
-	case s.Err == nil:
+	case s.Err == nil && (s.Response.ID != "" || s.Response.Text != "" || s.Response.Usage.OutputTokens > 0):
+		// An HTTP 200 without an answer (an error body) accepted nothing.
 		return "accepted"
 	case rejected(*s):
 		return "rejected"
