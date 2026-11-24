@@ -1,0 +1,27 @@
+# Release on tag v*: test, cross-build, publish a GitHub release (see docs/ci.md).
+when:
+  - event: tag
+    ref: refs/tags/v*
+
+steps:
+  - name: test
+    image: public.ecr.aws/docker/library/golang:1.23-bookworm
+    commands:
+      - go test -race ./...
+
+  - name: build
+    image: public.ecr.aws/docker/library/golang:1.23-bookworm
+    environment:
+      VERSION: ${CI_COMMIT_TAG}
+    commands:
+      - apt-get update -qq && apt-get install -y -qq zip >/dev/null
+      - sh scripts/build-release.sh
+
+  - name: publish
+    image: public.ecr.aws/docker/library/golang:1.23-bookworm
+    environment:
+      GITHUB_TOKEN:
+        from_secret: github_release_token
+    commands:
+      - apt-get update -qq && apt-get install -y -qq jq >/dev/null
+      - sh scripts/publish-release.sh
