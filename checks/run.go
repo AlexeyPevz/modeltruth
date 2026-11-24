@@ -38,14 +38,17 @@ type Report struct {
 // Run sends the tiny, medium and TaskProbes task prompts repeats times each,
 // interleaved so a time-based channel switch shows up in all of them, then the
 // tiny prompt StreamProbes times as a stream, then the TokenizerProbes
-// tokenizer prompts once, and evaluates every check. The answer word and the task prompts are drawn per
-// run, the output limit per request; see answerWords, taskPrompts and
-// outputLimits.
-func Run(ctx context.Context, s Sender, claimedModel string, repeats int) Report {
-	return runWith(ctx, s, claimedModel, repeats, answerWords[rand.IntN(len(answerWords))], drawTasks(TaskProbes))
+// tokenizer prompts once, then, for a Claude model over the Anthropic
+// protocol or Gemini 3 and later over an OpenAI-compatible one, SignatureProbes
+// signature round trips, and evaluates every check. The answer word, the
+// task prompts and the signature prompt's city are drawn per run, the
+// output limit per request; see answerWords, taskPrompts, signatureCities
+// and outputLimits.
+func Run(ctx context.Context, s Sender, protocol probe.Protocol, claimedModel string, repeats int) Report {
+	return runWith(ctx, s, protocol, claimedModel, repeats, answerWords[rand.IntN(len(answerWords))], drawTasks(TaskProbes))
 }
 
-func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, word string, tasks []string) Report {
+func runWith(ctx context.Context, s Sender, protocol probe.Protocol, claimedModel string, repeats int, word string, tasks []string) Report {
 	if repeats < 1 {
 		repeats = 1
 	}
@@ -79,10 +82,11 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 		}
 	}
 	samples = append(samples, tokenizerRun(ctx, s)...)
+	samples = append(samples, signatureRun(ctx, s, protocol, claimedModel, signatureCities[rand.IntN(len(signatureCities))])...)
 	rep := Report{Model: claimedModel, Requests: len(samples), Interrupted: ctx.Err() != nil}
 	for _, sample := range samples {
 		rep.Retries += sample.Response.Retries
-		if sample.Err != nil {
+		if sample.Err != nil && !rejected(sample) {
 			rep.Errors = append(rep.Errors, SampleError{Probe: sample.Probe, HTTPStatus: sample.Response.HTTPStatus, Retries: sample.Response.Retries, Error: sample.Err.Error()})
 			continue
 		}
@@ -95,6 +99,7 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 		ResponseShape(samples, claimedModel),
 		Tokenizer(samples, claimedModel),
 		StreamShape(samples),
+		Signature(samples, protocol, claimedModel),
 	}
 	rep.Verdict = Verdict(rep.Findings)
 	if rep.Successful == 0 {
@@ -130,11 +135,15 @@ func tokenizerRun(ctx context.Context, s Sender) []Sample {
 // send sends one probe prompt. A request that failed because the run was
 // cancelled says nothing about the endpoint, so it is dropped (ok false).
 func send(ctx context.Context, s Sender, name, text string, stream bool) (Sample, bool) {
-	resp, err := s.Send(ctx, probe.Request{User: text, MaxTokens: drawOutputLimit(), Stream: stream})
+	return sendRequest(ctx, s, name, probe.Request{User: text, MaxTokens: drawOutputLimit(), Stream: stream})
+}
+
+func sendRequest(ctx context.Context, s Sender, name string, req probe.Request) (Sample, bool) {
+	resp, err := s.Send(ctx, req)
 	if err != nil && ctx.Err() != nil {
 		return Sample{}, false
 	}
-	return Sample{Probe: name, PromptChars: len(text), Response: resp, Err: err}, true
+	return Sample{Probe: name, PromptChars: len(req.User), Response: resp, Err: err}, true
 }
 
 // Verdict is the worst status among findings; skips count only when nothing

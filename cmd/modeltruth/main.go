@@ -107,7 +107,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		Retries:  *retries,
 		MaxWait:  *maxWait,
 	}
-	rep := checks.Run(ctx, ep, *model, *repeats)
+	rep := checks.Run(ctx, ep, ep.Protocol, *model, *repeats)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
