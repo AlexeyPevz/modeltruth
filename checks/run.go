@@ -37,7 +37,8 @@ type Report struct {
 
 // Run sends the tiny, medium and TaskProbes task prompts repeats times each,
 // interleaved so a time-based channel switch shows up in all of them, then the
-// TokenizerProbes tokenizer prompts once, and evaluates every check. The answer word and the task prompts are drawn per
+// tiny prompt StreamProbes times as a stream, then the TokenizerProbes
+// tokenizer prompts once, and evaluates every check. The answer word and the task prompts are drawn per
 // run, the output limit per request; see answerWords, taskPrompts and
 // outputLimits.
 func Run(ctx context.Context, s Sender, claimedModel string, repeats int) Report {
@@ -67,9 +68,14 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 			if ctx.Err() != nil {
 				break
 			}
-			if sample, ok := send(ctx, s, p.name, p.text); ok {
+			if sample, ok := send(ctx, s, p.name, p.text, false); ok {
 				samples = append(samples, sample)
 			}
+		}
+	}
+	for i := 0; i < StreamProbes && ctx.Err() == nil; i++ {
+		if sample, ok := send(ctx, s, ProbeStream, tinyPrompt(word), true); ok {
+			samples = append(samples, sample)
 		}
 	}
 	samples = append(samples, tokenizerRun(ctx, s)...)
@@ -88,6 +94,7 @@ func runWith(ctx context.Context, s Sender, claimedModel string, repeats int, wo
 		UsageSanity(samples),
 		ResponseShape(samples, claimedModel),
 		Tokenizer(samples, claimedModel),
+		StreamShape(samples),
 	}
 	rep.Verdict = Verdict(rep.Findings)
 	if rep.Successful == 0 {
@@ -113,7 +120,7 @@ func tokenizerRun(ctx context.Context, s Sender) []Sample {
 		if ctx.Err() != nil {
 			break
 		}
-		if sample, ok := send(ctx, s, p.name, p.text); ok {
+		if sample, ok := send(ctx, s, p.name, p.text, false); ok {
 			out = append(out, sample)
 		}
 	}
@@ -122,8 +129,8 @@ func tokenizerRun(ctx context.Context, s Sender) []Sample {
 
 // send sends one probe prompt. A request that failed because the run was
 // cancelled says nothing about the endpoint, so it is dropped (ok false).
-func send(ctx context.Context, s Sender, name, text string) (Sample, bool) {
-	resp, err := s.Send(ctx, probe.Request{User: text, MaxTokens: drawOutputLimit()})
+func send(ctx context.Context, s Sender, name, text string, stream bool) (Sample, bool) {
+	resp, err := s.Send(ctx, probe.Request{User: text, MaxTokens: drawOutputLimit(), Stream: stream})
 	if err != nil && ctx.Err() != nil {
 		return Sample{}, false
 	}

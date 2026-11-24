@@ -73,6 +73,31 @@ Layer 1 and the tokenizer part of layer 3 ship. The others are in development.
   (`msg_vrtx_01…` on Vertex, `msg_bdrk_01…` on Bedrock). `msg_` followed by 32
   hex characters is a reverse-proxy signature. Gateways legitimately rewrite ids
   and model names, so this check only warns.
+- `stream_shape`: the tiny prompt is sent twice more with `stream: true`
+  (OpenAI with `stream_options.include_usage`). An Anthropic stream must be
+  `message_start`, then one or more `content_block_start` →
+  `content_block_delta`… → `content_block_stop`, then `message_delta` and
+  `message_stop` last; `ping` may appear anywhere and unknown event types are
+  ignored, as Anthropic documents. An OpenAI stream must carry content
+  chunks, put usage (when it reports any) in the final chunk before
+  `data: [DONE]`, and end with `[DONE]`; usage on the last content chunk
+  instead of a separate one is accepted, since several compatible servers do
+  it. Input from the stream (`message_start` merged with `message_delta` on
+  Anthropic) must match a non-streamed tiny request within the
+  `channel_consistency` spread (10% and 20 tokens); a relay that sends streams
+  to another channel, or estimates streaming usage instead of reading it, shows
+  up here; `channel_consistency` leaves the stream probes to this check.
+  Following the layer 1 policy of two consecutive failures, a broken
+  order or a usage mismatch in one stream warns, the same in both streams
+  fails. A JSON body in answer to a stream request counts as a broken order. A
+  stream without input usage only warns: many OpenAI-compatible servers ignore
+  `include_usage`. A final event without the blank line after it is
+  discarded, as SSE clients do, so a stream whose `[DONE]` or `message_stop`
+  is left unterminated has a broken order. An `error` event inside the
+  stream, a body cut off inside an event (data that is neither `[DONE]` nor
+  whole JSON), a stalled or oversized stream and HTTP errors are transport
+  errors: they are listed under failed requests and never count toward
+  `fail`.
 
 ## Layer 3: tokenizer
 

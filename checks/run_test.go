@@ -15,14 +15,23 @@ type fakeSender struct {
 	responses func(i int, req probe.Request) (probe.Response, error)
 }
 
+// Send answers stream requests with a well-formed OpenAI stream unless the
+// response already describes one.
 func (f *fakeSender) Send(_ context.Context, req probe.Request) (probe.Response, error) {
 	f.calls = append(f.calls, req)
-	return f.responses(len(f.calls)-1, req)
+	r, err := f.responses(len(f.calls)-1, req)
+	if req.Stream && err == nil && r.Stream == nil {
+		r.Stream = &probe.Stream{Protocol: probe.ProtocolOpenAI, Events: []string{"chunk", "usage", "[DONE]"}, Usage: r.Usage.InputTokens > 0}
+	}
+	return r, err
 }
 
 // perRun is the number of requests one repeat sends: tiny, medium and the
 // task prompts.
 const perRun = 2 + TaskProbes
+
+// fixedRequests is what a run sends on top of the repeats.
+const fixedRequests = StreamProbes + TokenizerProbes
 
 // cleanInput bills like a Claude endpoint: tokenizer probes get the Claude
 // profile, everything else a plausible count.
@@ -91,6 +100,19 @@ func TestRun(t *testing.T) {
 			}
 			return clean(i, req)
 		}, StatusPass},
+		{"failed stream requests are errors, not evidence", func(i int, req probe.Request) (probe.Response, error) {
+			if req.Stream {
+				return probe.Response{HTTPStatus: 429}, errors.New("probe: HTTP 429: rate")
+			}
+			return clean(i, req)
+		}, StatusPass},
+		{"streams billed unlike the same request without streaming fail", func(i int, req probe.Request) (probe.Response, error) {
+			r, _ := clean(i, req)
+			if req.Stream {
+				r.Usage.InputTokens += 4380
+			}
+			return r, nil
+		}, StatusFail},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -99,11 +121,11 @@ func TestRun(t *testing.T) {
 			if rep.Verdict != tt.wantVerdict {
 				t.Errorf("verdict = %q, want %q: %+v", rep.Verdict, tt.wantVerdict, rep.Findings)
 			}
-			if want := 3*perRun + TokenizerProbes; len(s.calls) != want || rep.Requests != want {
+			if want := 3*perRun + fixedRequests; len(s.calls) != want || rep.Requests != want {
 				t.Errorf("requests = %d (report %d), want %d", len(s.calls), rep.Requests, want)
 			}
-			if len(rep.Findings) != 5 {
-				t.Errorf("findings = %d, want 5", len(rep.Findings))
+			if len(rep.Findings) != 6 {
+				t.Errorf("findings = %d, want 6", len(rep.Findings))
 			}
 			if rep.Successful+len(rep.Errors) != rep.Requests {
 				t.Errorf("successful %d + errors %d != requests %d", rep.Successful, len(rep.Errors), rep.Requests)
@@ -117,8 +139,13 @@ func TestRunReportsErrors(t *testing.T) {
 		return probe.Response{HTTPStatus: 401}, errors.New("probe: HTTP 401: invalid key")
 	}}
 	rep := Run(context.Background(), s, "m", 2)
-	if len(rep.Errors) != 2*perRun+TokenizerProbes {
-		t.Fatalf("errors = %d, want %d", len(rep.Errors), 2*perRun+TokenizerProbes)
+	if len(rep.Errors) != 2*perRun+fixedRequests {
+		t.Fatalf("errors = %d, want %d", len(rep.Errors), 2*perRun+fixedRequests)
+	}
+	for _, f := range rep.Findings {
+		if f.Status == StatusFail {
+			t.Errorf("%s failed on transport errors: %s", f.Check, f.Summary)
+		}
 	}
 	if e := rep.Errors[0]; e.HTTPStatus != 401 || e.Probe != ProbeTiny || e.Error != "probe: HTTP 401: invalid key" {
 		t.Errorf("first error = %+v", e)
@@ -131,15 +158,26 @@ func TestRunPromptVariation(t *testing.T) {
 		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
 		runWith(context.Background(), s, "m", 3, "ready", tasks)
 		want := append([]string{tinyPrompt("ready"), mediumPrompt("ready")}, tasks...)
-		if len(s.calls) != 3*len(want)+TokenizerProbes {
-			t.Fatalf("calls = %d, want %d", len(s.calls), 3*len(want)+TokenizerProbes)
+		if len(s.calls) != 3*len(want)+fixedRequests {
+			t.Fatalf("calls = %d, want %d", len(s.calls), 3*len(want)+fixedRequests)
 		}
 		for i, c := range s.calls[:3*len(want)] {
-			if c.User != want[i%len(want)] {
-				t.Fatalf("call %d user = %q, want %q", i, c.User, want[i%len(want)])
+			if c.User != want[i%len(want)] || c.Stream {
+				t.Fatalf("call %d user = %q (stream %v), want %q without streaming", i, c.User, c.Stream, want[i%len(want)])
 			}
 		}
-		tok := s.calls[3*len(want):]
+		streams := s.calls[3*len(want) : 3*len(want)+StreamProbes]
+		for i, c := range streams {
+			if c.User != tinyPrompt("ready") || !c.Stream {
+				t.Fatalf("stream call %d user = %q (stream %v), want the tiny prompt streamed", i, c.User, c.Stream)
+			}
+		}
+		tok := s.calls[3*len(want)+StreamProbes:]
+		for _, c := range tok {
+			if c.Stream {
+				t.Fatalf("tokenizer probes must not stream")
+			}
+		}
 		if tok[0].User != tokenizerBase || tok[len(tok)-1].User != tokenizerBase {
 			t.Errorf("tokenizer probes must start and end with the base prompt")
 		}

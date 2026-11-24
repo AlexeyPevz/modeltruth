@@ -26,20 +26,7 @@ func TestRunCheckExitCodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				var body struct {
-					Messages []struct {
-						Content string `json:"content"`
-					} `json:"messages"`
-				}
-				_ = json.NewDecoder(r.Body).Decode(&body)
-				// Two tokens per three characters: plausible for every check,
-				// and kimi-k3 has no reference tokenizer to match.
-				input := tt.input
-				for _, m := range body.Messages {
-					input += utf8.RuneCountInString(m.Content) * 2 / 3
-				}
-				_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"kimi-k3","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":` + itoa(input) + `,"completion_tokens":1}}`))
+				answer(w, r, tt.input)
 			}))
 			defer srv.Close()
 			t.Setenv("MODELTRUTH_API_KEY", "test-key")
@@ -74,20 +61,37 @@ func TestRunCheckFailingEndpointIsAnError(t *testing.T) {
 	}
 }
 
-// usageHandler answers like the clean endpoint in TestRunCheckExitCodes.
-func usageHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+// answer replies like an OpenAI endpoint that bills base plus two tokens per
+// three characters of the messages: plausible for every check, and kimi-k3
+// has no reference tokenizer to match. Stream requests get an SSE stream
+// with usage in the final chunk.
+func answer(w http.ResponseWriter, r *http.Request, base int) {
 	var body struct {
+		Stream   bool `json:"stream"`
 		Messages []struct {
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	input := 12
+	input := base
 	for _, m := range body.Messages {
 		input += utf8.RuneCountInString(m.Content) * 2 / 3
 	}
-	_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"kimi-k3","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":` + itoa(input) + `,"completion_tokens":1}}`))
+	usage := `"usage":{"prompt_tokens":` + itoa(input) + `,"completion_tokens":1}`
+	if body.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-1","model":"kimi-k3","choices":[{"delta":{"content":"ok"}}],"usage":null}` + "\n\n" +
+			`data: {"id":"chatcmpl-1","model":"kimi-k3","choices":[],` + usage + `}` + "\n\n" +
+			"data: [DONE]\n\n"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"kimi-k3","choices":[{"message":{"content":"ok"}}],` + usage + `}`))
+}
+
+// usageHandler answers like the clean endpoint in TestRunCheckExitCodes.
+func usageHandler(w http.ResponseWriter, r *http.Request) {
+	answer(w, r, 12)
 }
 
 func TestRunCheckRetries(t *testing.T) {
@@ -108,7 +112,7 @@ func TestRunCheckRetries(t *testing.T) {
 		if code != 0 {
 			t.Errorf("exit code = %d, want 0; stderr: %s\n%s", code, errOut.String(), out.String())
 		}
-		for _, want := range []string{"verdict:  PASS", "(19 ok, 19 retries)"} {
+		for _, want := range []string{"verdict:  PASS", "(21 ok, 21 retries)"} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("output missing %q:\n%s", want, out.String())
 			}
@@ -143,8 +147,8 @@ func TestRunCheckRetries(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
 			t.Fatalf("decode report: %v\n%s", err, out.String())
 		}
-		if len(rep.Errors) != 19 || rep.Retries != 19 {
-			t.Fatalf("errors = %d, retries = %d, want 19 and 19", len(rep.Errors), rep.Retries)
+		if len(rep.Errors) != 21 || rep.Retries != 21 {
+			t.Fatalf("errors = %d, retries = %d, want 21 and 21", len(rep.Errors), rep.Retries)
 		}
 		for i, e := range rep.Errors {
 			if e.HTTPStatus != http.StatusTooManyRequests || e.Retries != 1 {
