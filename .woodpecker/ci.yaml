@@ -1,0 +1,13 @@
+# CI on self-hosted Woodpecker (https://oysters31.ru/woodpecker), see docs/ci.md.
+when:
+  - event: pull_request
+  - event: push
+    branch: ${CI_REPO_DEFAULT_BRANCH}
+
+steps:
+  - name: test
+    image: public.ecr.aws/docker/library/golang:1.23-bookworm
+    commands:
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - go vet ./...
+      - go test -race ./...
