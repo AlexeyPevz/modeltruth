@@ -209,8 +209,8 @@ separated; a channel that switches upstreams between requests may pass one run.
 ## Layer 4: tier classifier
 
 The `fingerprint` package scores parsed answers (see Fingerprint templates
-below) against a bank of reference answers. It is not wired into
-`modeltruth check` until a bank exists (the bank format is a separate task).
+below) against a bank of reference answers (see Reference bank format
+below). It is not wired into `modeltruth check` until a bank exists.
 
 Scoring. Every model of the bank with at least `MinReferenceSamples` (5)
 references of the probe's template version is a candidate, whatever the
@@ -269,6 +269,34 @@ When the bank holds models it cannot separate (Sonnet 5 and Sonnet 5.5 in the
 pilot), the named winner can be any of them, and a probe from one of them
 claimed as another is skipped. A model missing from the bank can still win as
 its nearest neighbour.
+
+### Reference bank format
+
+The `bank` package reads and writes one JSON file per model and request
+environment; `modeltruth collect` makes them (README, "Reference bank").
+
+- `format` is `modeltruth-bank` and `version` is 1. A reader rejects any other
+  version, and unknown fields, instead of guessing.
+- `environment` is what a probe must match: `protocol`,
+  `system_prompt_chars` (0 for a clean request; the text is not stored),
+  `max_tokens`, the template version and the spec (categories and integer
+  list). `CheckEnvironment` lists every field in which a probe's environment
+  differs; the order of categories does not count, since it does not change
+  the prompts.
+- `provenance`: a channel name (never a URL or a key), the tool version,
+  start and end time, `sample_count`, `requested`, `failed` and `retries`.
+  Failed requests (HTTP errors, timeouts, unreadable bodies, and empty
+  answers that arrived with HTTP 200) are only counted under `failed`,
+  never stored as samples, so an error page cannot become a reference; a
+  non-empty refusal that arrived with HTTP 200 is a sample.
+- `samples`: seed, time, echoed model name, input and output tokens, and the
+  raw answer. Features are not stored: loading regenerates each prompt from
+  the template version and seed and parses the answer, so a parser fix
+  applies to old banks. A bank of a template version the code no longer
+  generates cannot be loaded into references.
+
+Samples of one model from several files (different days or channels of the
+same environment) are pooled by the classifier.
 
 ## Pilot, 2026-10-26
 

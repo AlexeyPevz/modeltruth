@@ -73,6 +73,52 @@ the channel is real; it does not tell which model or tier answered.
 GPT-4 sold as a new GPT fails; it cannot tell tiers that share a tokenizer
 (Opus from Sonnet), which is what the fingerprint layers below are for.
 
+## Reference bank
+
+Tier fingerprints need reference answers of every model, taken in the same
+request environment as the probe. `modeltruth collect` builds such a bank from
+a key you trust (the vendor's own API, or a channel you have verified):
+
+```sh
+export MODELTRUTH_API_KEY=sk-...
+modeltruth collect --base-url https://api.anthropic.com --protocol anthropic \
+  --model claude-opus-5-5 --channel anthropic-direct --samples 30 --out opus-5-5.json
+```
+
+It sends `--samples` fingerprint prompts (default 30) one at a time, each made
+from a fresh seed, and writes one JSON file per model and environment. Options:
+`--system-file FILE` sends the file's text as the system prompt of every
+request (the bank records only its length, for references taken behind a
+client's system prompt), `--max-tokens` (default 2048), and `--protocol`,
+`--api-key-env`, `--timeout`, `--retries` and `--max-wait` as for `check`.
+
+The file holds the format version, the model, the environment (protocol,
+system prompt length, `max_tokens`, template version and what the prompts
+asked for), the provenance (the `--channel` name, the modeltruth version,
+start and end time, samples asked for, collected and failed, retries) and
+every sample with its seed, time, echoed model name, token usage and raw
+answer. Features are parsed again from the raw answers when a bank is loaded.
+See [bank/testdata/synthetic-bank.json](bank/testdata/synthetic-bank.json)
+for an example made from synthetic answers.
+
+Nothing that identifies your access is written: not the key, not the
+authorization headers, not the base URL or its query. `--channel` must be a
+name, not a URL. If the endpoint echoes the key, the base URL, its host or
+query values, or the whole system prompt in an answer or an
+error, they are replaced with `[redacted]` in the bank and on the terminal. A request that fails (HTTP
+error, timeout, unreadable body) is not a sample: it is counted under
+`failed` and listed on the terminal. An existing file is never overwritten.
+Ctrl-C stops the run and writes the samples collected so far, marked as
+interrupted.
+
+Exit codes: `0` all samples written, `1` usage error, no sample collected (no
+file is left) or the file could not be written, `2` the bank was written with
+fewer samples than asked for (failed requests or Ctrl-C).
+
+A bank of another format version is rejected on load, and a probe sent in an
+environment other than the bank's is reported as a mismatch naming each
+differing field. The tier check that uses banks is not wired into `check` yet.
+
 ## Roadmap
 
 1. **Channel proofs**: verify `channel_signature` live against Anthropic's and
@@ -83,6 +129,7 @@ GPT-4 sold as a new GPT fails; it cannot tell tiers that share a tokenizer
    model of the family, with abstention when evidence is weak.
 4. **Reference bank**: versioned, with provenance (channel, date, sample count)
    and raw samples, plus `modeltruth collect` to build your own from a trusted key.
+   The format and `collect` ship (see above); a published bank follows.
 5. **Monitoring mode** for operators who need to probe their own upstreams on a schedule.
 
 ## Trust model
