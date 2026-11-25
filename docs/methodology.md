@@ -285,10 +285,10 @@ environment; `modeltruth collect` makes them (README, "Reference bank").
   the prompts.
 - `provenance`: a channel name (never a URL or a key), the tool version,
   start and end time, `sample_count`, `requested`, `failed` and `retries`.
-  Failed requests (HTTP errors, timeouts, unreadable bodies) are only
-  counted, never stored as samples, so an error page cannot become a
-  reference; an empty or refused answer that arrived with HTTP 200 is a
-  sample.
+  Failed requests (HTTP errors, timeouts, unreadable bodies, and empty
+  answers that arrived with HTTP 200) are only counted under `failed`,
+  never stored as samples, so an error page cannot become a reference; a
+  non-empty refusal that arrived with HTTP 200 is a sample.
 - `samples`: seed, time, echoed model name, input and output tokens, and the
   raw answer. Features are not stored: loading regenerates each prompt from
   the template version and seed and parses the answer, so a parser fix
