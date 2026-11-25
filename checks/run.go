@@ -86,7 +86,7 @@ func runWith(ctx context.Context, s Sender, protocol probe.Protocol, claimedMode
 	rep := Report{Model: claimedModel, Requests: len(samples), Interrupted: ctx.Err() != nil}
 	for _, sample := range samples {
 		rep.Retries += sample.Response.Retries
-		if sample.Err != nil && !rejected(sample) {
+		if sample.Err != nil && !answer(sample) {
 			rep.Errors = append(rep.Errors, SampleError{Probe: sample.Probe, HTTPStatus: sample.Response.HTTPStatus, Retries: sample.Response.Retries, Error: sample.Err.Error()})
 			continue
 		}

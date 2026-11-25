@@ -129,23 +129,37 @@ Decision rules:
 - `fail`: in every round, and at least two, the endpoint accepted the changed
   signature (it does not verify, so the vendor is not behind it), or rejected
   its own (the signature was issued on another channel than the one that
-  verified it).
-- `warn`: one of those problems in one round only, or an answer without a
-  signature where the vendor always signs: Claude with manual thinking, and
-  Gemini 3 on its first tool call.
+  verified it). Its own signature counts as rejected only when the error
+  names the signature, as Anthropic and Google errors do, or when the changed
+  one was accepted in the same round.
+- `warn`: one of those problems in one round only; a round in which both
+  conversations were refused with an error that does not name the signature;
+  or an answer without a signature where the vendor always signs: Claude with
+  manual thinking, and Gemini 3 on its first tool call.
 - `skip`: the claimed model is not Claude over the Anthropic protocol or Gemini
   3 or later over an OpenAI-compatible API (Gemini 2.5 does not validate its
   signatures, Claude over OpenAI-compatible APIs returns none); the endpoint
   refused thinking or tools with HTTP 400 or 422; the model called no tool, or
-  under adaptive thinking did not think; or no round completed.
+  under adaptive thinking did not think; every complete round refused both
+  conversations without naming the signature (the endpoint does not accept
+  the conversation sent back: tool result format, its own limits); or no
+  round completed.
 - Errors are not evidence. 429, 5xx and timeouts are listed under failed
   requests and leave the round incomplete. A rejected sent-back conversation
-  (HTTP 400 or 422) is an answer, not an error.
+  (HTTP 400 or 422), and the adaptive request a Claude 4.5 endpoint refuses
+  before the run switches to manual thinking, are answers, not errors.
 
 Limits: a pass proves that the vendor verified signatures it issued on this
 channel. It does not say which model or tier answered: a relay may pass a
 cheaper model of the same vendor. Reading the model from a signature is
-layer 5.
+layer 5. Two relays are not caught:
+
+- A relay that strips `thought_signature` from every Gemini 3 answer only
+  warns: without a signature there is nothing to send back.
+- A relay that keeps its own cache of the signatures it handed out, accepts
+  those and rejects anything else passes without the vendor verifying
+  anything. It still had to obtain each signature from a real model of that
+  vendor once.
 
 Formats: [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking),
 [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking),

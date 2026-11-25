@@ -7,14 +7,19 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/AlexeyPevz/modeltruth/probe"
 )
 
 // Signature probes: the signed request, and its conversation sent back once
 // with the signature as issued and once with one byte of it changed.
+// ProbeSignatureAdaptive is a signed Claude request with adaptive thinking
+// that the endpoint refused, after which the request is repeated as
+// ProbeSignature with manual thinking.
 const (
 	ProbeSignature         = "signature"
+	ProbeSignatureAdaptive = "signature_adaptive"
 	ProbeSignatureOriginal = "signature_original"
 	ProbeSignatureTampered = "signature_tampered"
 )
@@ -76,15 +81,16 @@ func signatureRun(ctx context.Context, s Sender, protocol probe.Protocol, claime
 		if !ok {
 			break
 		}
-		out = append(out, first)
 		if refusal(first) && protocol == probe.ProtocolAnthropic && !manual {
 			// Claude 4.5 and earlier refuse adaptive thinking.
+			first.Probe = ProbeSignatureAdaptive
+			out = append(out, first)
 			manual, req.ManualThinking = true, true
 			if first, ok = sendRequest(ctx, s, ProbeSignature, req); !ok {
 				break
 			}
-			out = append(out, first)
 		}
+		out = append(out, first)
 		turn := first.Response.Turn
 		if first.Err != nil || turn == nil || turn.Signature == "" || len(turn.ToolCalls) == 0 {
 			continue
@@ -109,7 +115,7 @@ func signatureRun(ctx context.Context, s Sender, protocol probe.Protocol, claime
 }
 
 func isSignatureProbe(name string) bool {
-	return name == ProbeSignature || name == ProbeSignatureOriginal || name == ProbeSignatureTampered
+	return name == ProbeSignature || name == ProbeSignatureAdaptive || name == ProbeSignatureOriginal || name == ProbeSignatureTampered
 }
 
 // refusal reports whether the endpoint refused the request outright (HTTP
@@ -118,10 +124,18 @@ func refusal(s Sample) bool {
 	return s.Err != nil && (s.Response.HTTPStatus == http.StatusBadRequest || s.Response.HTTPStatus == http.StatusUnprocessableEntity)
 }
 
-// rejected reports whether a sent-back conversation was refused: an answer
-// about the signature, not a failed request.
-func rejected(s Sample) bool {
-	return (s.Probe == ProbeSignatureOriginal || s.Probe == ProbeSignatureTampered) && refusal(s)
+// answer reports whether a failed sample is still an answer of the endpoint,
+// not an error of the run: a refused sent-back conversation, or the refused
+// adaptive request that the run repeats with manual thinking.
+func answer(s Sample) bool {
+	return (s.Probe == ProbeSignatureAdaptive || s.Probe == ProbeSignatureOriginal || s.Probe == ProbeSignatureTampered) && refusal(s)
+}
+
+// aboutSignature reports whether a refusal names the signature, as vendors
+// do when one does not verify ("Invalid `signature` in `thinking` block",
+// "Corrupted thought signature"), rather than another part of the request.
+func aboutSignature(s *Sample) bool {
+	return s.Err != nil && strings.Contains(strings.ToLower(s.Err.Error()), "signature")
 }
 
 type signatureRound struct {
@@ -157,7 +171,7 @@ func verdictOf(s *Sample) string {
 	case s.Err == nil && (s.Response.ID != "" || s.Response.Text != "" || s.Response.Usage.OutputTokens > 0):
 		// An HTTP 200 without an answer (an error body) accepted nothing.
 		return "accepted"
-	case rejected(*s):
+	case refusal(*s) && s.Probe != ProbeSignature:
 		return "rejected"
 	}
 	return ""
@@ -173,8 +187,12 @@ var signatureLabels = map[string]struct{ kind, vendor string }{
 // changed byte is rejected. Only the vendor can tell the two apart, so an
 // endpoint that accepts the forgery is not backed by the vendor, and one
 // that rejects its own signature issued it on another channel than the one
-// that verified it. A problem in one round warns; the same problem in every
-// round (at least SignatureProbes of them) fails. An answer without a
+// that verified it. Its own signature counts as rejected only when the
+// refusal names the signature or the forgery was accepted: an endpoint that
+// refuses both conversations for another reason (tool result format, a
+// limit) proves nothing and skips, or warns when other rounds completed. A
+// problem in one round warns; the same problem in every round (at least
+// SignatureProbes of them) fails. An answer without a
 // signature warns where the vendor always signs: Claude with manual
 // thinking, and Gemini 3 on its first tool call. A refused signed request
 // (the endpoint does not accept thinking or tools), another model family, a
@@ -190,10 +208,11 @@ func Signature(samples []Sample, protocol probe.Protocol, claimedModel string) F
 	label := signatureLabels[family]
 	rounds := signatureRounds(samples)
 	var (
-		answered, refused, unsigned, complete  int
-		forgedAccepted, ownRejected, ownStatus int
-		problems                               []string
-		evidence                               []map[string]any
+		answered, refused, unsigned, signed, complete int
+		forgedAccepted, ownRejected, ownStatus        int
+		replayRefused, problemRounds, replayStatus    int
+		problems                                      []string
+		evidence                                      []map[string]any
 	)
 	for _, r := range rounds {
 		ev := map[string]any{"status": r.first.Response.HTTPStatus}
@@ -218,6 +237,7 @@ func Signature(samples []Sample, protocol probe.Protocol, claimedModel string) F
 			}
 			continue
 		}
+		signed++
 		original, tampered := verdictOf(r.original), verdictOf(r.tampered)
 		if r.original != nil {
 			ev["original"] = r.original.Response.HTTPStatus
@@ -225,17 +245,29 @@ func Signature(samples []Sample, protocol probe.Protocol, claimedModel string) F
 		if r.tampered != nil {
 			ev["tampered"] = r.tampered.Response.HTTPStatus
 		}
-		if original == "rejected" {
+		ownBad := original == "rejected" && (tampered == "accepted" || aboutSignature(r.original))
+		replayBad := original == "rejected" && tampered == "rejected" && !ownBad
+		if ownBad {
 			problems = append(problems, fmt.Sprintf("the endpoint rejected its own signature (HTTP %d)", r.original.Response.HTTPStatus))
 		}
 		if tampered == "accepted" {
 			problems = append(problems, "the endpoint accepted a signature with one changed byte")
 		}
+		if replayBad {
+			replayStatus = r.original.Response.HTTPStatus
+			problems = append(problems, fmt.Sprintf("the endpoint refused the conversation sent back with either signature (HTTP %d) without naming the signature", replayStatus))
+		}
+		if ownBad || tampered == "accepted" || replayBad {
+			problemRounds++
+		}
 		if original == "" || tampered == "" {
 			continue
 		}
 		complete++
-		if original == "rejected" {
+		switch {
+		case replayBad:
+			replayRefused++
+		case ownBad:
 			ownRejected++
 			ownStatus = r.original.Response.HTTPStatus
 		}
@@ -257,8 +289,11 @@ func Signature(samples []Sample, protocol probe.Protocol, claimedModel string) F
 	case every(ownRejected):
 		f.Status = StatusFail
 		f.Summary = fmt.Sprintf("the endpoint rejected its own %s signature in all %d round trips (HTTP %d): the signature was not issued by the channel that verifies it", label.kind, complete, ownStatus)
-	case len(problems) > 0:
-		f.Status, f.Summary = StatusWarn, fmt.Sprintf("%d of %d signature round trips: %s", len(problems), answered, problems[0])
+	case complete > 0 && replayRefused == complete:
+		f.Status = StatusSkip
+		f.Summary = fmt.Sprintf("the endpoint does not accept the conversation sent back (HTTP %d for both signatures, the error does not name the signature)", replayStatus)
+	case problemRounds > 0:
+		f.Status, f.Summary = StatusWarn, fmt.Sprintf("%d of %d signature round trips: %s", problemRounds, signed, problems[0])
 	case unsigned > 0:
 		f.Status, f.Summary = StatusWarn, fmt.Sprintf("%d of %d answers carried no %s signature, which %s always issues for this request", unsigned, answered, label.kind, label.vendor)
 	case complete == 0:

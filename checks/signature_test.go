@@ -19,7 +19,10 @@ import (
 const (
 	honest         = "honest"          // accepts the signatures it issued, rejects the rest
 	acceptsAny     = "accepts_any"     // accepts every sent-back turn
-	rejectsAll     = "rejects_all"     // rejects every sent-back turn
+	rejectsAll     = "rejects_all"     // rejects every sent-back turn, naming the signature
+	rejectsReplay  = "rejects_replay"  // refuses every sent-back turn for a reason other than the signature
+	replayOnce     = "rejects_replay1" // refuses both sent-back turns in the first round only, otherwise honest
+	inverted       = "inverted"        // rejects its own signatures without naming them, accepts forgeries
 	unsigned       = "unsigned"        // answers with a tool call but no signature
 	noThinking     = "no_thinking"     // refuses thinking and tools with HTTP 400
 	rateLimited    = "rate_limited"    // answers sent-back turns with HTTP 429
@@ -89,6 +92,15 @@ func (s *signatureServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accept = true
 	case s.mode == rejectsAll:
 		accept = false
+	case s.mode == rejectsReplay, s.mode == replayOnce && round == 1:
+		http.Error(w, `{"error":{"message":"messages.2: tool_result content exceeds the endpoint limit"}}`, http.StatusBadRequest)
+		return
+	case s.mode == inverted:
+		if accept {
+			http.Error(w, `{"error":{"message":"request rejected"}}`, http.StatusBadRequest)
+			return
+		}
+		accept = true
 	case s.mode == errorBody:
 		w.Write([]byte(`{"error":{"message":"upstream failed"}}`))
 		return
@@ -141,7 +153,8 @@ func (s *signatureServer) sentBack(messages []any) string {
 	}
 	if s.protocol == probe.ProtocolAnthropic {
 		if len(messages) != 3 {
-			s.t.Fatalf("messages = %d, want user, assistant, tool results", len(messages))
+			s.t.Errorf("messages = %d, want user, assistant, tool results", len(messages))
+			return ""
 		}
 		results, _ := messages[2].(map[string]any)["content"].([]any)
 		if len(results) != 1 || results[0].(map[string]any)["type"] != "tool_result" || results[0].(map[string]any)["tool_use_id"] == "" {
@@ -185,6 +198,11 @@ func TestSignature(t *testing.T) {
 		{mode: honest, want: StatusPass},
 		{mode: acceptsAny, want: StatusFail},
 		{mode: rejectsAll, want: StatusFail},
+		// A 400 on both sent-back turns that does not name the signature is
+		// not evidence that the endpoint rejects its own signature.
+		{mode: rejectsReplay, want: StatusSkip},
+		{mode: replayOnce, want: StatusWarn},
+		{mode: inverted, want: StatusFail},
 		// Adaptive thinking may skip the thinking block; Gemini 3 always signs.
 		{mode: unsigned, want: StatusWarn, wantClaude: StatusSkip},
 		{mode: manualOnly, want: StatusPass},
@@ -210,9 +228,13 @@ func TestSignature(t *testing.T) {
 				if f.Check != "channel_signature" || f.Status != want {
 					t.Errorf("%s = %s, want %s: %s", f.Check, f.Status, want, f.Summary)
 				}
+				var bad, of int
+				if _, err := fmt.Sscanf(f.Summary, "%d of %d", &bad, &of); err == nil && (bad < 1 || bad > of || of > SignatureProbes) {
+					t.Errorf("summary counts %d of %d round trips: %s", bad, of, f.Summary)
+				}
 				var transport int
 				for _, s := range samples {
-					if s.Err != nil && !rejected(s) && !refusal(s) {
+					if s.Err != nil && !refusal(s) {
 						transport++
 					}
 				}
@@ -311,9 +333,10 @@ func TestSignatureSkipsOtherModels(t *testing.T) {
 
 func TestRunSignature(t *testing.T) {
 	for _, tt := range []struct {
-		mode string
-		want Status
-	}{{honest, StatusPass}, {acceptsAny, StatusFail}} {
+		mode  string
+		want  Status
+		extra int // the adaptive request refused before manual thinking
+	}{{honest, StatusPass, 0}, {acceptsAny, StatusFail, 0}, {manualOnly, StatusPass, 1}} {
 		t.Run(tt.mode, func(t *testing.T) {
 			_, ep := newSignatureServer(t, probe.ProtocolAnthropic, tt.mode)
 			s := &fakeSender{responses: func(_ int, req probe.Request) (probe.Response, error) {
@@ -323,7 +346,7 @@ func TestRunSignature(t *testing.T) {
 				return probe.Response{HTTPStatus: 200, ID: "msg_01MzmDFUhapVJeHMhAUX2ZwC", Model: "claude-sonnet-5", Text: "ok", Usage: probe.Usage{InputTokens: cleanInput(req), OutputTokens: 1}}, nil
 			}}
 			rep := Run(context.Background(), s, probe.ProtocolAnthropic, "claude-sonnet-5", 3)
-			if want := 3*perRun + fixedRequests + 3*SignatureProbes; len(s.calls) != want || rep.Requests != want {
+			if want := 3*perRun + fixedRequests + 3*SignatureProbes + tt.extra; len(s.calls) != want || rep.Requests != want {
 				t.Errorf("requests = %d (report %d), want %d", len(s.calls), rep.Requests, want)
 			}
 			sig := rep.Findings[len(rep.Findings)-1]
@@ -331,7 +354,7 @@ func TestRunSignature(t *testing.T) {
 				t.Errorf("verdict = %s, signature = %+v, want %s", rep.Verdict, sig, tt.want)
 			}
 			if len(rep.Errors) != 0 || rep.Successful != rep.Requests {
-				t.Errorf("errors = %+v, successful %d of %d: rejected forgeries are answers, not errors", rep.Errors, rep.Successful, rep.Requests)
+				t.Errorf("errors = %+v, successful %d of %d: rejected forgeries and the refused adaptive request are answers, not errors", rep.Errors, rep.Successful, rep.Requests)
 			}
 		})
 	}
