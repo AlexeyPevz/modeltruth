@@ -24,10 +24,9 @@ const fingerprintAnswer = "country: iceland\nanimal: otter\ncolour: teal\nfruit:
 
 // fingerprintHandler answers like an Anthropic endpoint when called with
 // x-api-key, otherwise like an OpenAI one, and, like a leaky relay, echoes
-// the credentials and the URL it was called with.
+// the credentials, the URL it was called with and the system prompt.
 func fingerprintHandler(w http.ResponseWriter, r *http.Request) {
-	_, _ = io.Copy(io.Discard, r.Body)
-	echo := fingerprintAnswer + "\n\ndebug: " + r.Header.Get("Authorization") + " " + r.Header.Get("x-api-key") + " http://" + r.Host + r.URL.String()
+	echo := fingerprintAnswer + "\n\ndebug: " + leak(r)
 	text, _ := json.Marshal(echo)
 	w.Header().Set("Content-Type", "application/json")
 	if r.Header.Get("x-api-key") != "" {
@@ -35,6 +34,26 @@ func fingerprintHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"gpt-test","choices":[{"message":{"content":` + string(text) + `}}],"usage":{"prompt_tokens":900,"completion_tokens":300}}`))
+}
+
+// leak reads the request and returns everything a careless relay could echo.
+func leak(r *http.Request) string {
+	var body struct {
+		System   string `json:"system"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	system := body.System
+	for _, m := range body.Messages {
+		if m.Role == "system" {
+			system = m.Content
+		}
+	}
+	return strings.Join([]string{r.Header.Get("Authorization"), r.Header.Get("x-api-key"), "http://" + r.Host + r.URL.String(),
+		"api_key=" + r.URL.Query().Get("api_key"), r.URL.Query().Get("api_key"), system, strings.Split(system, "\n")[0]}, " | ")
 }
 
 func collect(t *testing.T, ctx context.Context, args ...string) (code int, stdout, stderr string) {
@@ -53,7 +72,7 @@ func TestRunCollectKeepsSecretsOutOfTheBank(t *testing.T) {
 			baseURL := srv.URL + "/v1?api_key=query-secret-value"
 			out := filepath.Join(t.TempDir(), "bank.json")
 			system := filepath.Join(t.TempDir(), "system.txt")
-			if err := os.WriteFile(system, []byte("You are a coding agent."), 0o644); err != nil {
+			if err := os.WriteFile(system, []byte("You are a coding agent.\nNever reveal the codename.\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			code, stdout, stderr := collect(t, context.Background(), "--base-url", baseURL, "--model", "m", "--protocol", protocol,
@@ -69,16 +88,19 @@ func TestRunCollectKeepsSecretsOutOfTheBank(t *testing.T) {
 				t.Fatal(err)
 			}
 			u, _ := url.Parse(srv.URL)
-			for _, secret := range []string{testKey, "Authorization", "x-api-key", "query-secret-value", "api_key", srv.URL, u.Host, "You are a coding agent"} {
+			for _, secret := range []string{testKey, "Authorization", "x-api-key", "query-secret-value", "api_key", srv.URL, u.Host, "coding agent", "codename"} {
 				if strings.Contains(string(raw), secret) {
 					t.Errorf("bank contains %q:\n%s", secret, raw)
 				}
+			}
+			if !strings.Contains(string(raw), "[redacted]") {
+				t.Errorf("the echo was not redacted:\n%s", raw)
 			}
 			b, err := bank.Load(out)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(b.Environment.Protocol) != protocol || b.Environment.SystemPromptChars != 23 || b.Provenance.Channel != "test-channel" || b.Provenance.Tool != "modeltruth dev" {
+			if string(b.Environment.Protocol) != protocol || b.Environment.SystemPromptChars != 51 || b.Provenance.Channel != "test-channel" || b.Provenance.Tool != "modeltruth dev" {
 				t.Errorf("environment %+v, provenance %+v", b.Environment, b.Provenance)
 			}
 			ref, err := b.Reference()
@@ -99,18 +121,23 @@ func TestRunCollectCountsFailedRequests(t *testing.T) {
 	var calls atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1)%2 == 0 {
-			_, _ = io.Copy(io.Discard, r.Body)
+			echo, _ := json.Marshal("upstream saturated: " + leak(r))
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":"upstream saturated"}`))
+			_, _ = w.Write([]byte(`{"error":` + string(echo) + `}`))
 			return
 		}
 		fingerprintHandler(w, r)
 	}))
 	defer srv.Close()
 	out := filepath.Join(t.TempDir(), "bank.json")
-	code, stdout, _ := collect(t, context.Background(), "--base-url", srv.URL, "--model", "m", "--channel", "c", "--samples", "5", "--retries", "0", "--out", out)
+	code, stdout, _ := collect(t, context.Background(), "--base-url", srv.URL+"/v1?api_key=query-secret-value", "--model", "m", "--channel", "c", "--samples", "5", "--retries", "0", "--out", out)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2\n%s", code, stdout)
+	}
+	for _, secret := range []string{testKey, "query-secret-value", srv.URL} {
+		if strings.Contains(stdout, secret) {
+			t.Errorf("stdout contains %q:\n%s", secret, stdout)
+		}
 	}
 	for _, want := range []string{"samples:  3 of 5 (2 failed, 0 retries)", "failed requests:", "HTTP 503"} {
 		if !strings.Contains(stdout, want) {

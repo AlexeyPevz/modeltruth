@@ -103,8 +103,9 @@ for an example made from synthetic answers.
 
 Nothing that identifies your access is written: not the key, not the
 authorization headers, not the base URL or its query. `--channel` must be a
-name, not a URL. If the endpoint echoes the key, the base URL or its host in
-an answer, they are replaced with `[redacted]`. A request that fails (HTTP
+name, not a URL. If the endpoint echoes the key, the base URL, its host or
+query values, or the system prompt (whole or by line) in an answer or an
+error, they are replaced with `[redacted]` in the bank and on the terminal. A request that fails (HTTP
 error, timeout, unreadable body) is not a sample: it is counted under
 `failed` and listed on the terminal. An existing file is never overwritten.
 Ctrl-C stops the run and writes the samples collected so far, marked as

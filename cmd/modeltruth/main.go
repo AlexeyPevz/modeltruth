@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"time"
 
@@ -240,6 +241,7 @@ func runCollect(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		Retries:  *retries,
 		MaxWait:  *maxWait,
 	}
+	secrets := secretReplacer(key, *baseURL, system)
 	var failures []string
 	b, err := bank.Collect(ctx, ep, bank.CollectOptions{
 		Model:     *model,
@@ -250,13 +252,13 @@ func runCollect(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		System:    system,
 		MaxTokens: *maxTokens,
 		Spec:      fingerprint.DefaultSpec(),
-		OnError:   func(err error) { failures = append(failures, err.Error()) },
+		OnError:   func(err error) { failures = append(failures, secrets.Replace(err.Error())) },
 	})
 	if err == nil && len(b.Samples) == 0 {
 		err = errors.New("no sample collected; the bank was not written")
 	}
 	if err == nil {
-		redact(b, key, *baseURL)
+		redact(b, secrets)
 		err = b.Write(f)
 	}
 	if cerr := f.Close(); err == nil {
@@ -288,22 +290,44 @@ func runCollect(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return 0
 }
 
-// redact removes the key and the base URL from what the endpoint sent back:
-// a relay that echoes request headers or its own address must not get them
-// into a bank that is meant to be published.
-func redact(b *bank.Bank, key, baseURL string) {
-	secrets := []string{key, baseURL}
+// secretReplacer hides what identifies the access or the system prompt: a
+// relay that echoes request headers, its own address or the instructions must
+// not get them into a bank meant to be published or into the terminal log.
+// Query values and prompt lines shorter than 8 characters are left alone, so
+// that a parameter like v=1 does not damage answers.
+func secretReplacer(key, baseURL, system string) *strings.Replacer {
+	secrets := []string{key, baseURL, strings.TrimSpace(system)}
 	if u, err := url.Parse(baseURL); err == nil {
 		secrets = append(secrets, u.RawQuery, u.Host)
+		for _, values := range u.Query() {
+			for _, v := range values {
+				if len(v) >= 8 {
+					secrets = append(secrets, v)
+				}
+			}
+		}
 	}
+	for _, line := range strings.Split(system, "\n") {
+		if line = strings.TrimSpace(line); len(line) >= 8 {
+			secrets = append(secrets, line)
+		}
+	}
+	// Longer secrets first, so that a match is never cut short by a secret
+	// that is a part of it.
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	var pairs []string
+	for _, secret := range secrets {
+		if secret != "" {
+			pairs = append(pairs, secret, "[redacted]")
+		}
+	}
+	return strings.NewReplacer(pairs...)
+}
+
+func redact(b *bank.Bank, r *strings.Replacer) {
 	for i := range b.Samples {
 		s := &b.Samples[i]
-		for _, secret := range secrets {
-			if secret == "" {
-				continue
-			}
-			s.Answer = strings.ReplaceAll(s.Answer, secret, "[redacted]")
-			s.ResponseModel = strings.ReplaceAll(s.ResponseModel, secret, "[redacted]")
-		}
+		s.Answer = r.Replace(s.Answer)
+		s.ResponseModel = r.Replace(s.ResponseModel)
 	}
 }
