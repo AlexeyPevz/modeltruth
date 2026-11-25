@@ -196,10 +196,8 @@ func (s scorer) score(f Features, ps []*profile, use FeatureKind) []float64 {
 			if !ok {
 				continue
 			}
-			v := len(s.vocab[c])
-			if !s.vocab[c][w] {
-				v++
-			}
+			// One outcome more for a word no candidate gave.
+			v := len(s.vocab[c]) + 1
 			for i, p := range ps {
 				out[i] += math.Log((float64(p.words[c][w]) + laplaceAlpha) / (float64(p.answered[c]) + laplaceAlpha*float64(v)))
 			}
