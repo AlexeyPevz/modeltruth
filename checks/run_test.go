@@ -117,15 +117,15 @@ func TestRun(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &fakeSender{responses: tt.responses}
-			rep := Run(context.Background(), s, "claude-sonnet-5", 3)
+			rep := Run(context.Background(), s, probe.ProtocolOpenAI, "claude-sonnet-5", 3)
 			if rep.Verdict != tt.wantVerdict {
 				t.Errorf("verdict = %q, want %q: %+v", rep.Verdict, tt.wantVerdict, rep.Findings)
 			}
 			if want := 3*perRun + fixedRequests; len(s.calls) != want || rep.Requests != want {
 				t.Errorf("requests = %d (report %d), want %d", len(s.calls), rep.Requests, want)
 			}
-			if len(rep.Findings) != 6 {
-				t.Errorf("findings = %d, want 6", len(rep.Findings))
+			if len(rep.Findings) != 7 {
+				t.Errorf("findings = %d, want 7", len(rep.Findings))
 			}
 			if rep.Successful+len(rep.Errors) != rep.Requests {
 				t.Errorf("successful %d + errors %d != requests %d", rep.Successful, len(rep.Errors), rep.Requests)
@@ -138,7 +138,7 @@ func TestRunReportsErrors(t *testing.T) {
 	s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) {
 		return probe.Response{HTTPStatus: 401}, errors.New("probe: HTTP 401: invalid key")
 	}}
-	rep := Run(context.Background(), s, "m", 2)
+	rep := Run(context.Background(), s, probe.ProtocolOpenAI, "m", 2)
 	if len(rep.Errors) != 2*perRun+fixedRequests {
 		t.Fatalf("errors = %d, want %d", len(rep.Errors), 2*perRun+fixedRequests)
 	}
@@ -156,7 +156,7 @@ func TestRunPromptVariation(t *testing.T) {
 	tasks := []string{taskPrompts[0], taskPrompts[1], taskPrompts[2]}
 	t.Run("every repeat sends the same prompts in the same order", func(t *testing.T) {
 		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
-		runWith(context.Background(), s, "m", 3, "ready", tasks)
+		runWith(context.Background(), s, probe.ProtocolOpenAI, "m", 3, "ready", tasks)
 		want := append([]string{tinyPrompt("ready"), mediumPrompt("ready")}, tasks...)
 		if len(s.calls) != 3*len(want)+fixedRequests {
 			t.Fatalf("calls = %d, want %d", len(s.calls), 3*len(want)+fixedRequests)
@@ -186,7 +186,7 @@ func TestRunPromptVariation(t *testing.T) {
 		tinies, taskSets := map[string]bool{}, map[string]bool{}
 		for i := 0; i < 40; i++ {
 			s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
-			Run(context.Background(), s, "m", 1)
+			Run(context.Background(), s, probe.ProtocolOpenAI, "m", 1)
 			tinies[s.calls[0].User] = true
 			var set []string
 			for _, c := range s.calls[2:] {
@@ -200,7 +200,7 @@ func TestRunPromptVariation(t *testing.T) {
 	})
 	t.Run("output limits look like real clients and vary between requests", func(t *testing.T) {
 		s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) { return probe.Response{HTTPStatus: 200}, nil }}
-		Run(context.Background(), s, "m", 4)
+		Run(context.Background(), s, probe.ProtocolOpenAI, "m", 4)
 		limits := map[int]bool{}
 		for i, c := range s.calls {
 			if c.MaxTokens < 256 || c.MaxTokens > 4096 {
@@ -238,7 +238,7 @@ func TestRunRetriesAndInterrupt(t *testing.T) {
 			}
 			return r, nil
 		}}
-		rep := Run(context.Background(), s, "claude-sonnet-5", 3)
+		rep := Run(context.Background(), s, probe.ProtocolOpenAI, "claude-sonnet-5", 3)
 		if rep.Verdict != StatusPass || rep.Retries != 4 || rep.Interrupted {
 			t.Errorf("verdict %q, retries %d, interrupted %v; want pass, 4, false", rep.Verdict, rep.Retries, rep.Interrupted)
 		}
@@ -256,7 +256,7 @@ func TestRunRetriesAndInterrupt(t *testing.T) {
 			}
 			return probe.Response{HTTPStatus: 200, Text: "ok", Usage: probe.Usage{InputTokens: cleanInput(req), OutputTokens: 1}}, nil
 		}}
-		rep := Run(ctx, s, "m", 3)
+		rep := Run(ctx, s, probe.ProtocolOpenAI, "m", 3)
 		if len(s.calls) != 4 {
 			t.Errorf("calls = %d, want 4: nothing may be sent after the cancel", len(s.calls))
 		}

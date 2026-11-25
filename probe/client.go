@@ -40,6 +40,18 @@ type Request struct {
 	// Stream asks for a server-sent event stream (with usage, on OpenAI via
 	// stream_options.include_usage); Response.Stream then describes it.
 	Stream bool
+	// Signed asks for a reasoning turn that should end in a call to
+	// SignatureTool: on Anthropic the tool with adaptive thinking, or
+	// with ManualThinking extended thinking (budget ThinkingBudget) for
+	// models that predate adaptive thinking; on OpenAI-compatible APIs the
+	// tool with reasoning_effort "low". Response.Turn then holds the
+	// assistant turn.
+	Signed         bool
+	ManualThinking bool
+	// Reply continues a signed request: User again, then Reply.Message as
+	// the assistant turn, then a tool result for each of its tool calls,
+	// with the same tool and thinking settings as the request it answered.
+	Reply *Turn
 }
 
 // Usage holds token counts as reported by the endpoint. InputTokens is the
@@ -77,6 +89,8 @@ type Response struct {
 	Retries    int
 	// Stream is set for stream requests only.
 	Stream *Stream
+	// Turn is set for successful Signed requests only.
+	Turn *Turn
 }
 
 // Endpoint is an API under test.
@@ -112,7 +126,7 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 		maxWait = DefaultMaxWait
 	}
 	for attempt := 0; ; attempt++ {
-		out, retryAfter, err := e.sendOnce(ctx, client, url, body, headers, req.Stream)
+		out, retryAfter, err := e.sendOnce(ctx, client, url, body, headers, req)
 		out.Retries = attempt
 		if err == nil || attempt >= e.Retries || !retryable(ctx, out.HTTPStatus, err) {
 			return out, err
@@ -136,7 +150,7 @@ func (e Endpoint) Send(ctx context.Context, req Request) (Response, error) {
 
 // sendOnce performs a single attempt. retryAfter is the parsed Retry-After
 // header, or -1 when the response has none.
-func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string, body []byte, headers map[string]string, stream bool) (out Response, retryAfter time.Duration, err error) {
+func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string, body []byte, headers map[string]string, req Request) (out Response, retryAfter time.Duration, err error) {
 	retryAfter = -1
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -162,7 +176,7 @@ func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string,
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return out, retryAfter, fmt.Errorf("probe: HTTP %d: %s", resp.StatusCode, snippet(raw))
 	}
-	if stream && !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+	if req.Stream && !strings.Contains(resp.Header.Get("Content-Type"), "json") {
 		if len(raw) >= maxBodyBytes {
 			return out, retryAfter, fmt.Errorf("probe: stream exceeds %d bytes", maxBodyBytes)
 		}
@@ -174,8 +188,13 @@ func (e Endpoint) sendOnce(ctx context.Context, client *http.Client, url string,
 	default:
 		err = parseOpenAI(raw, &out)
 	}
-	if stream {
+	if req.Stream {
 		out.Stream = &Stream{Protocol: e.protocol(), JSON: true, Usage: out.Usage.InputTokens > 0}
+	}
+	if req.Signed && err == nil {
+		if out.Turn, err = parseTurn(e.protocol(), raw); err == nil {
+			out.Turn.ManualThinking = req.ManualThinking
+		}
 	}
 	return out, retryAfter, err
 }
@@ -255,7 +274,10 @@ func (e Endpoint) build(req Request) (string, []byte, map[string]string, error) 
 		payload := map[string]any{
 			"model":      e.Model,
 			"max_tokens": maxTokens,
-			"messages":   []map[string]any{{"role": "user", "content": req.User}},
+			"messages":   anthropicMessages(req),
+		}
+		if signed(req) {
+			anthropicSigned(payload, maxTokens, manualThinking(req))
 		}
 		if req.System != "" {
 			payload["system"] = req.System
@@ -268,12 +290,18 @@ func (e Endpoint) build(req Request) (string, []byte, map[string]string, error) 
 		headers["anthropic-version"] = "2023-06-01"
 		return base + "/messages", body, headers, err
 	case ProtocolOpenAI, "":
-		messages := []map[string]any{}
+		messages := []any{}
 		if req.System != "" {
 			messages = append(messages, map[string]any{"role": "system", "content": req.System})
 		}
 		messages = append(messages, map[string]any{"role": "user", "content": req.User})
+		if req.Reply != nil {
+			messages = openAIReply(messages, req.Reply)
+		}
 		payload := map[string]any{"model": e.Model, "max_tokens": maxTokens, "messages": messages}
+		if signed(req) {
+			openAISigned(payload)
+		}
 		if req.Stream {
 			payload["stream"] = true
 			payload["stream_options"] = map[string]any{"include_usage": true}

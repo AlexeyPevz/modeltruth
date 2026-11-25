@@ -30,7 +30,12 @@ modeltruth check --base-url https://relay.example.com --model claude-opus-5-5 --
 
 The key is read from an environment variable and is only sent to the endpoint
 under test. A run sends 31 short requests (`--repeats 3`: five prompts three
-times, the tiny prompt twice as a stream, then 14 tokenizer prompts once).
+times, the tiny prompt twice as a stream, then 14 tokenizer prompts once). For
+a Claude model with `--protocol anthropic`, or Gemini 3 and later over an
+OpenAI-compatible API, it then sends up to 6 signature requests (two round
+trips of three; one more when the endpoint refuses adaptive thinking and the
+request is repeated with manual thinking). These ask for thinking and a tool
+call, so they bill more output than the other probes.
 
 Requests that fail with HTTP 429, 500, 502, 503, 504 or a timeout are repeated
 up to `--retries` times (default `2`; `--retries 0` sends every request once).
@@ -58,17 +63,20 @@ before the first answer), `2` at least one check failed.
 | `usage_sanity` | Fabricated or under-reported usage | A ~700-character prompt cannot tokenize to fewer than len/6 tokens |
 | `response_shape` | Rewritten or foreign responses | Anthropic message id format, echoed model name |
 | `stream_shape` | Streams that are not the vendor's, or billed differently | The tiny prompt sent twice with `stream: true`: Anthropic event order (`message_start` → `content_block_*` → `message_delta` → `message_stop`), OpenAI usage in the final chunk and `[DONE]`, and the same input size as without streaming |
+| `channel_signature` | A relay that is not backed by the vendor it sells | Claude thinking signatures and Gemini 3 thought signatures must round-trip: the endpoint must accept its own signature in the next turn and reject the same signature with one changed byte |
 | `tokenizer` | Another model behind the name, fabricated usage | The input-token difference that 12 fixed texts add to a base prompt must match the claimed family's tokenizer (o200k, Claude, Gemini, DeepSeek, GLM, Qwen, MiniMax) |
 
 The first five catch the cheap tricks and tell you how the endpoint is wired.
+`channel_signature` proves that the vendor checks the reasoning signatures, so
+the channel is real; it does not tell which model or tier answered.
 `tokenizer` identifies the tokenizer family, so a GPT sold as Gemini or an old
 GPT-4 sold as a new GPT fails; it cannot tell tiers that share a tokenizer
 (Opus from Sonnet), which is what the fingerprint layers below are for.
 
 ## Roadmap
 
-1. **Channel proofs**: Claude thinking signatures and Gemini thought signatures
-   must round-trip and a tampered signature must be rejected.
+1. **Channel proofs**: verify `channel_signature` live against Anthropic's and
+   Google's own APIs and paid relays.
 2. **Generation**: exact tokenizer deltas on fixed texts, error and parameter
    contracts, knowledge cutoff.
 3. **Tier**: statistical fingerprints of "random" choices, scored against every

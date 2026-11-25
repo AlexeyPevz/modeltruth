@@ -30,7 +30,7 @@ tokenizer. modeltruth therefore combines layers and reports each one separately.
 | 4. Tier | Which tier answered? | Distributions of "random" choices (words, numbers), capability edges | Yes, per model and environment | 3 failures within 24 hours |
 | 5. Signature model name | Which model signed the thinking block? | Model identifier inside the Claude signature, if the format allows it | No | 2 consecutive failures |
 
-Layer 1 and the tokenizer part of layer 3 ship. The others are in development.
+Layers 1 and 2 and the tokenizer part of layer 3 ship. The others are in development.
 
 ## Decision rules
 
@@ -98,6 +98,73 @@ Layer 1 and the tokenizer part of layer 3 ship. The others are in development.
   whole JSON), a stalled or oversized stream and HTTP errors are transport
   errors: they are listed under failed requests and never count toward
   `fail`.
+
+## Layer 2: signature round trip
+
+Claude and Gemini 3 sign their reasoning, and only the vendor can verify the
+signature: Anthropic rejects a modified thinking block with HTTP 400, Gemini 3
+rejects a function call whose thought signature is missing or wrong with a 4xx.
+A relay that forwards requests to the vendor passes that verification through;
+one that answers with another backend, or caches and replays answers, cannot.
+
+Request shape (`channel_signature`, two rounds per run):
+
+1. A short prompt that asks for the weather in a city drawn per run, with one
+   tool (`get_weather`) offered. On Anthropic (`--protocol anthropic`) with
+   `thinking: {"type": "adaptive"}`; an endpoint that refuses it (Claude 4.5
+   and earlier) gets the request again with `{"type": "enabled",
+   "budget_tokens": 1024}` for the rest of the run. On OpenAI-compatible APIs
+   with `reasoning_effort: "low"`. `max_tokens` is 2048 or 4096.
+2. The assistant turn as returned, with every content block unchanged (the
+   `thinking` block and its `signature`, or the `tool_calls` entry with
+   `extra_content.google.thought_signature`), then a tool result for each tool
+   call.
+3. The same conversation with one byte of the signature changed (one bit of the
+   middle byte of the decoded base64 value).
+
+Decision rules:
+
+- `pass`: in every complete round the endpoint accepted its own signature
+  (2xx) and rejected the changed one (HTTP 400 or 422).
+- `fail`: in every round, and at least two, the endpoint accepted the changed
+  signature (it does not verify, so the vendor is not behind it), or rejected
+  its own (the signature was issued on another channel than the one that
+  verified it). Its own signature counts as rejected only when the error
+  names the signature, as Anthropic and Google errors do, or when the changed
+  one was accepted in the same round.
+- `warn`: one of those problems in one round only; a round in which both
+  conversations were refused with an error that does not name the signature;
+  or an answer without a signature where the vendor always signs: Claude with
+  manual thinking, and Gemini 3 on its first tool call.
+- `skip`: the claimed model is not Claude over the Anthropic protocol or Gemini
+  3 or later over an OpenAI-compatible API (Gemini 2.5 does not validate its
+  signatures, Claude over OpenAI-compatible APIs returns none); the endpoint
+  refused thinking or tools with HTTP 400 or 422; the model called no tool, or
+  under adaptive thinking did not think; every complete round refused both
+  conversations without naming the signature (the endpoint does not accept
+  the conversation sent back: tool result format, its own limits); or no
+  round completed.
+- Errors are not evidence. 429, 5xx and timeouts are listed under failed
+  requests and leave the round incomplete. A rejected sent-back conversation
+  (HTTP 400 or 422), and the adaptive request a Claude 4.5 endpoint refuses
+  before the run switches to manual thinking, are answers, not errors.
+
+Limits: a pass proves that the vendor verified signatures it issued on this
+channel. It does not say which model or tier answered: a relay may pass a
+cheaper model of the same vendor. Reading the model from a signature is
+layer 5. Two relays are not caught:
+
+- A relay that strips `thought_signature` from every Gemini 3 answer only
+  warns: without a signature there is nothing to send back.
+- A relay that keeps its own cache of the signatures it handed out, accepts
+  those and rejects anything else passes without the vendor verifying
+  anything. The check cannot tell a vendor signature from a string the relay
+  made up; telling them apart is layer 5.
+
+Formats: [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking),
+[adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking),
+[Gemini thought signatures](https://ai.google.dev/gemini-api/docs/thought-signatures),
+[Gemini thought signatures with OpenAI compatibility](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures).
 
 ## Layer 3: tokenizer
 
