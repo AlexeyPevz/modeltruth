@@ -329,3 +329,17 @@ func TestClassifyPairAccuracyNeedsBothModels(t *testing.T) {
 		t.Fatalf("got %s (%s) scores %+v margin %.2f, want a skip", c.Decision, c.Reason, c.Scores, c.Margin)
 	}
 }
+
+func TestClassifyIgnoresWordsNoCandidateGave(t *testing.T) {
+	r := rand.New(rand.NewPCG(18, 19))
+	// Opus has twice the references of sonnet; an answer in words neither
+	// gave must not lean towards sonnet for having fewer.
+	bank := append(synthBank(r, 2*MinReferenceSamples, separable, "opus"), synthBank(r, MinReferenceSamples, separable, "sonnet")...)
+	probe := Features{Template: TemplateVersion, Words: map[Category]string{}, WordsAsked: len(allCategories)}
+	for _, c := range allCategories {
+		probe.Words[c] = "unseen"
+	}
+	if c := Classify(bank, "opus", probe); c.Decision != Skip || c.Margin != 0 {
+		t.Fatalf("got %s (%s) margin %.2f", c.Decision, c.Reason, c.Margin)
+	}
+}

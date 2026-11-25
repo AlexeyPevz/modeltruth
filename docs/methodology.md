@@ -219,7 +219,9 @@ each candidate:
 
 - words: a multinomial log-likelihood per category with Laplace smoothing
   (pseudo-count 1) over the words any candidate gave for it, plus one outcome
-  for a word none gave; categories are treated as independent, as in the pilot;
+  for words none gave; categories are treated as independent, as in the pilot.
+  A word no candidate gave is not scored: under smoothing it only favours the
+  candidates with fewer references;
 - integers: `-H / NumberTemperature`, where `H` is the Hellinger distance
   between the probe's integers and the candidate's pooled reference integers
   (Laplace-smoothed over every integer seen), following ModelTrace's softmax

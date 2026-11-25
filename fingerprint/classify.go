@@ -185,18 +185,20 @@ func usable(f Features, ps []*profile, kinds FeatureKind) FeatureKind {
 }
 
 // score returns the log-score of f under each profile: a Laplace-smoothed
-// multinomial log-likelihood of the words, one independent choice per
-// category, plus -H/NumberTemperature for the Hellinger distance H between
+// multinomial log-likelihood of the words some candidate gave, one
+// independent choice per category, plus -H/NumberTemperature for the Hellinger distance H between
 // the answer's integers and the model's smoothed reference integers.
 func (s scorer) score(f Features, ps []*profile, use FeatureKind) []float64 {
 	out := make([]float64, len(ps))
 	if use&WordFeatures != 0 {
 		for _, c := range allCategories {
+			// A word no candidate gave only favours the candidates with
+			// fewer references, whose smoothing leaves it more mass.
 			w, ok := f.Words[c]
-			if !ok {
+			if !ok || !s.vocab[c][w] {
 				continue
 			}
-			// One outcome more for a word no candidate gave.
+			// One outcome more for words no candidate gave.
 			v := len(s.vocab[c]) + 1
 			for i, p := range ps {
 				out[i] += math.Log((float64(p.words[c][w]) + laplaceAlpha) / (float64(p.answered[c]) + laplaceAlpha*float64(v)))
