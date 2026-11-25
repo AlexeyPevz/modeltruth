@@ -107,16 +107,23 @@ func TestParseSyntheticAnswers(t *testing.T) {
 		},
 		{
 			name:     "out of range, negative, fractional and huge numbers",
-			answer:   "integers: 0, 101, -5, 2.5, 99999999999999999999999, 50, 10-20, 7.",
+			answer:   "integers: 0, 101, -5, 2.5, 99999999999999999999999, 50, 10-20, 7., .5, −7, -3",
 			words:    map[Category]string{},
 			numbers:  []int{50, 10, 20, 7},
-			rejected: 5,
+			rejected: 8,
 		},
 		{
 			name:     "numbers enumerated one per line",
 			answer:   "Numbers:\n1. 64\n2. 12\n3) 100",
 			words:    map[Category]string{},
 			numbers:  []int{64, 12, 100},
+			rejected: 0,
+		},
+		{
+			name:     "another label ends the list",
+			answer:   "numbers: 5, 6\nCount: 2\n7, 8\nNote: 9\ncolour: red",
+			words:    map[Category]string{Colour: "red"},
+			numbers:  []int{5, 6},
 			rejected: 0,
 		},
 		{
@@ -161,7 +168,7 @@ func TestParseSyntheticAnswers(t *testing.T) {
 
 func TestParseNumbersOnlyPromptNeedsNoLabel(t *testing.T) {
 	p := mustGenerate(t, Spec{Numbers: NumberSpec{Min: 1, Max: 355, Count: 5}}, 2)
-	f := Parse(p, "Here you go:\n12 300 7\n355, 400\ncountry: France")
+	f := Parse(p, "Here you go:\n12 300 7\nCount: 3\n355, 400\ncountry: France 2")
 	if !reflect.DeepEqual(f.Numbers, []int{12, 300, 7, 355}) || f.Rejected != 1 || len(f.Words) != 0 {
 		t.Fatalf("numbers %v rejected %d words %v", f.Numbers, f.Rejected, f.Words)
 	}

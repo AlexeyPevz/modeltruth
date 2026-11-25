@@ -89,9 +89,14 @@ func Parse(p Prompt, answer string) Features {
 				}
 				continue
 			}
-			if f.NumbersAsked > 0 && slices.Contains(numberLabels, key) {
+			switch {
+			case f.NumbersAsked > 0 && slices.Contains(numberLabels, key):
 				inNumbers = true
 				line = value
+			case strings.ContainsFunc(key, unicode.IsLetter):
+				// Another label ("Count: 2") is not part of the list.
+				inNumbers = inNumbers && len(p.Categories) == 0
+				continue
 			}
 		}
 		if inNumbers {
@@ -153,7 +158,8 @@ func normalizeWord(c Category, value string) (string, bool) {
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // readNumbers adds the integers written in s. Anything between them
-// (commas, spaces, words) is a separator.
+// (commas, spaces, words) is a separator; negative and fractional numbers
+// (-7, −7, 2.5, .5) are rejected.
 func (f *Features) readNumbers(s string, spec NumberSpec) {
 	for i := 0; i < len(s); {
 		if !isDigit(s[i]) {
@@ -164,8 +170,11 @@ func (f *Features) readNumbers(s string, spec NumberSpec) {
 		for j < len(s) && isDigit(s[j]) {
 			j++
 		}
-		negative := i > 0 && s[i-1] == '-' && (i == 1 || !isDigit(s[i-2]))
-		fraction := j+1 < len(s) && s[j] == '.' && isDigit(s[j+1])
+		// A minus sign right before the digits, and not between two numbers
+		// as in "10-20", makes the number negative.
+		before, size := utf8.DecodeLastRuneInString(s[:i])
+		negative := strings.ContainsRune("-−", before) && (i == size || !isDigit(s[i-size-1]))
+		fraction := (i > 0 && s[i-1] == '.') || (j+1 < len(s) && s[j] == '.' && isDigit(s[j+1]))
 		digits := s[i:j]
 		if fraction {
 			for j++; j < len(s) && isDigit(s[j]); j++ {
