@@ -69,7 +69,11 @@ func TestTokenizer(t *testing.T) {
 		{"Gemini model billed like o200k fails", "gemini-4-argon", tokenizerSamples(4, 4, o200k), StatusFail, "o200k"},
 		{"Gemini model billed like Gemma 3 passes", "gemini-4-argon", tokenizerSamples(34, 34, profileDeltas(t, "gemma3")), StatusPass, "gemma3"},
 		{"Claude billed like the Claude tokenizer passes", "claude-opus-5-5", tokenizerSamples(15, 15, claude), StatusPass, "claude"},
-		{"Claude matching no known tokenizer fails", "claude-haiku-4-5", tokenizerSamples(15, 15, ch687), StatusFail, "no known anthropic tokenizer"},
+		{"Claude matching no known tokenizer fails", "claude-sonnet-5", tokenizerSamples(15, 15, ch687), StatusFail, "no known anthropic tokenizer"},
+		{"Claude 4.x without a reference is skipped", "claude-haiku-4-5-20251001", tokenizerSamples(15, 15, ch687), StatusSkip, "no reference anthropic-4 tokenizer"},
+		{"Claude 4.x billed like o200k fails", "claude-sonnet-4-6", tokenizerSamples(10, 10, o200k), StatusFail, "o200k (openai), not a anthropic-4 tokenizer"},
+		{"Claude 4.x billed like Claude 5 fails", "claude-haiku-4-5", tokenizerSamples(15, 15, claude), StatusFail, "claude (anthropic), not a anthropic-4 tokenizer"},
+		{"word-count usage fails for Claude 4.x", "claude-sonnet-4-6", tokenizerSamples(15, 15, wordCount), StatusFail, "not computed by a tokenizer"},
 		{"Claude billed 10% above the Claude tokenizer is inflated", "claude-sonnet-5", tokenizerSamples(14, 14, ch2863), StatusFail, "claude tokenizer inflated by 10%"},
 		{"GPT billed 25% above o200k is inflated", "gpt-6-luna", tokenizerSamples(10, 10, o200kPlus25), StatusFail, "o200k tokenizer inflated by 25%"},
 		{"word-count usage fails for any model", "kimi-k3", tokenizerSamples(15, 15, wordCount), StatusFail, "not computed by a tokenizer"},
@@ -98,6 +102,10 @@ func TestTokenizerFamily(t *testing.T) {
 		{"gpt-5.4", "openai"}, {"gpt-4o-mini", "openai"}, {"gpt-4.1-mini", "openai"}, {"openai/GPT-6-Luna", "openai"},
 		{"o3-mini", "openai"}, {"gpt-4", "openai-legacy"}, {"gpt-4-turbo", "openai-legacy"}, {"gpt-3.5-turbo", "openai-legacy"},
 		{"claude-opus-5-5", "anthropic"}, {"[SP]claude-sonnet-5-5", "anthropic"}, {"gemini-4-argon", "google"},
+		{"claude-haiku-4-5-20251001", "anthropic-4"}, {"claude-haiku-4-5-20251001-r", "anthropic-4"}, {"claude-sonnet-4-6", "anthropic-4"},
+		{"claude-sonnet-4.6", "anthropic-4"}, {"claude-sonnet-4-20250514", "anthropic-4"}, {"anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic-4"},
+		{"claude-opus-4-1-20250805", "anthropic-4"}, {"claude-opus-4-6-thinking", "anthropic-4"},
+		{"claude-opus-4-7", "anthropic"}, {"claude-opus-4-8-1m", "anthropic"}, {"claude-sonnet-5", "anthropic"},
 		{"[free]deepseek-v4.1-flash", "deepseek"}, {"glm-5.3-flashx", "zhipu"}, {"qwen3.8-flash", "qwen"},
 		{"kimi-k3", ""}, {"grok-4.7", ""},
 	}
@@ -105,6 +113,50 @@ func TestTokenizerFamily(t *testing.T) {
 		if got := tokenizerFamily(tt.model); got != tt.want {
 			t.Errorf("tokenizerFamily(%q) = %q, want %q", tt.model, got, tt.want)
 		}
+	}
+}
+
+// TestTokenizerClaude4Reference runs the check with a stand-in anthropic-4
+// profile (Claude 5 minus three tokens on every text) in the bank, the way
+// the measured Claude 4.x reference will be judged once it is added.
+func TestTokenizerClaude4Reference(t *testing.T) {
+	claude := profileDeltas(t, "claude")
+	ref := make([]int, len(claude))
+	official := make([]int64, len(claude))
+	for i, d := range claude {
+		ref[i], official[i] = int(d)-3, d-3
+	}
+	inflated := make([]int64, len(official))
+	for i, d := range official {
+		inflated[i] = (d*23 + 10) / 20
+	}
+	saved := tokenizerBank
+	tokenizerBank = append(append([]tokenizerProfile(nil), saved...), tokenizerProfile{"claude-4", "anthropic-4", "stand-in", ref})
+	t.Cleanup(func() { tokenizerBank = saved })
+	tests := []struct {
+		name     string
+		model    string
+		samples  []Sample
+		want     Status
+		contains string
+	}{
+		{"official Claude 4.x counts pass", "claude-haiku-4-5-20251001", tokenizerSamples(15, 15, official), StatusPass, "claude-4"},
+		{"one noisy text is tolerated", "claude-sonnet-4-6", tokenizerSamples(15, 15, with(official, 3, 60)), StatusPass, "claude-4"},
+		{"GPT tokenizer sold as Claude 4.x fails", "claude-sonnet-4-6", tokenizerSamples(10, 10, profileDeltas(t, "o200k")), StatusFail, "o200k"},
+		{"Claude 5 tokenizer sold as Claude 4.x fails", "claude-haiku-4-5", tokenizerSamples(15, 15, claude), StatusFail, "not a anthropic-4 tokenizer"},
+		{"Claude 4.x counts sold as Claude 5 fail", "claude-opus-5-5", tokenizerSamples(15, 15, official), StatusFail, "claude-4 (anthropic-4)"},
+		{"Claude 4.x billed 15% above the reference is inflated", "claude-sonnet-4-6", tokenizerSamples(15, 15, inflated), StatusFail, "claude-4 tokenizer inflated by 15%"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := Tokenizer(tt.samples, tt.model)
+			if f.Status != tt.want {
+				t.Fatalf("status = %q, want %q: %s", f.Status, tt.want, f.Summary)
+			}
+			if !strings.Contains(f.Summary, tt.contains) {
+				t.Errorf("summary %q does not mention %q", f.Summary, tt.contains)
+			}
+		})
 	}
 }
 

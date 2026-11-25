@@ -203,6 +203,29 @@ usage on a channel selling Claude and Gemini, Claude channels billing 10% above
 the Claude tokenizer, and four gpt-6.1-sol channels whose tokenizer is not
 o200k.
 
+Claude generations are judged separately: Anthropic replaced the tokenizer in
+Claude Opus 4.7, so Claude 4.0 to 4.6 (claude-sonnet-4, claude-haiku-4-5,
+claude-sonnet-4-6 and their Bedrock ids) form the `anthropic-4` family and
+Claude 4.7 and later stay on the `claude` profile. On 2026-11-25 LinkAPI
+claude-haiku-4-5-20251001, LinkAPI ClaudePro claude-sonnet-4-6 and an A6
+channel answering with Bedrock ids (`msg_bdrk_`) all differed from `claude`
+in the same way, so `anthropic-4` has its own tokenizer. The bank has no
+`anthropic-4` profile yet: until it does, these models fail only on another
+family's tokenizer (o200k, Claude 5 and others) or on fabricated usage, and
+skip otherwise.
+
+To add the reference, run the official API for claude-haiku-4-5-20251001 and
+claude-sonnet-4-6:
+
+```
+modeltruth check --base-url https://api.anthropic.com --protocol anthropic \
+  --model claude-haiku-4-5-20251001 --json
+```
+
+and take `deltas` of the `tokenizer` finding (12 counts in `tokenizerTexts`
+order). When both models and the three channels above agree within one token,
+add `{"claude-4", "anthropic-4", "<source>", []int{...}}` to `tokenizerBank`.
+
 Tiers that share a tokenizer (Opus, Sonnet, Haiku of one generation) are not
 separated; a channel that switches upstreams between requests may pass one run.
 

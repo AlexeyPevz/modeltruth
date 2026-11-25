@@ -3,6 +3,7 @@ package checks
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -135,7 +136,7 @@ func tokenizerFamily(model string) string {
 	parts := nameParts(name)
 	switch {
 	case strings.Contains(name, "claude"):
-		return "anthropic"
+		return claudeFamily(parts)
 	case strings.Contains(name, "gemini"), strings.Contains(name, "gemma"):
 		return "google"
 	case strings.Contains(name, "deepseek"):
@@ -164,6 +165,46 @@ func tokenizerFamily(model string) string {
 	return ""
 }
 
+// claudeFamily separates Claude generations by tokenizer: Anthropic replaced
+// the tokenizer in Claude Opus 4.7, so Claude 4.0 to 4.6 (claude-sonnet-4,
+// claude-haiku-4-5-20251001, claude-sonnet-4-6, Bedrock's
+// anthropic.claude-...) are "anthropic-4" and every later model "anthropic".
+// The version is the first one- or two-digit parts after "claude".
+func claudeFamily(parts []string) string {
+	var version []int
+	seen := false
+	for _, p := range parts {
+		if !seen {
+			seen = strings.Contains(p, "claude")
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || len(p) > 2 {
+			if len(version) > 0 {
+				break
+			}
+			continue
+		}
+		if version = append(version, n); len(version) == 2 {
+			break
+		}
+	}
+	if len(version) > 0 && version[0] == 4 && (len(version) == 1 || version[1] < 7) {
+		return "anthropic-4"
+	}
+	return "anthropic"
+}
+
+// hasProfile reports whether the bank holds a reference for the family.
+func hasProfile(family string) bool {
+	for _, p := range tokenizerBank {
+		if p.family == family {
+			return true
+		}
+	}
+	return false
+}
+
 // outliers counts the valid texts whose difference is further than the
 // tolerance from the profile.
 func outliers(deltas map[int]int64, profile []int) int {
@@ -181,7 +222,8 @@ func outliers(deltas map[int]int64, profile []int) int {
 // their difference is the text's token count under the serving model's
 // tokenizer: a GPT sold as Gemini, an old GPT-4 sold as GPT-6 or a DeepSeek
 // sold as GLM is billed with its own tokenizer, and fabricated usage matches
-// none. Only families with a reference in tokenizerBank are judged.
+// none. A family without a reference in tokenizerBank (Claude 4.0 to 4.6 for
+// now) fails only on another family's tokenizer or fabricated usage.
 func Tokenizer(samples []Sample, claimedModel string) Finding {
 	f := Finding{Check: "tokenizer"}
 	bases := inputs(ok(samples, ProbeTokenizerBase))
@@ -255,6 +297,8 @@ func Tokenizer(samples []Sample, claimedModel string) Finding {
 		f.Status, f.Summary = StatusSkip, fmt.Sprintf("no reference tokenizer for %q; usage is billed like %s (%s)", claimedModel, match.name, match.family)
 	case family == "":
 		f.Status, f.Summary = StatusSkip, fmt.Sprintf("no reference tokenizer for %q; usage matches no known tokenizer (closest %s)", claimedModel, closest.name)
+	case match == nil && !hasProfile(family):
+		f.Status, f.Summary = StatusSkip, fmt.Sprintf("no reference %s tokenizer for %q yet; usage matches no known tokenizer (closest %s)", family, claimedModel, closest.name)
 	case match != nil && match.family == family:
 		f.Status, f.Summary = StatusPass, fmt.Sprintf("usage is billed like %s, the %s tokenizer", match.name, family)
 	case match != nil:
