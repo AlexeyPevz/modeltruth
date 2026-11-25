@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -307,6 +308,40 @@ func (s *signatureServer) checkRequests(t *testing.T) {
 	}
 }
 
+// A Claude endpoint that refuses every request has answered nothing, even
+// though its refusal of adaptive thinking is not an error.
+func TestRunSignatureAllRefused(t *testing.T) {
+	s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) {
+		return probe.Response{HTTPStatus: http.StatusBadRequest}, errors.New("probe: HTTP 400: model not found")
+	}}
+	rep := Run(context.Background(), s, probe.ProtocolAnthropic, "claude-sonnet-5", 1)
+	if rep.Successful != 0 || rep.Verdict != StatusError {
+		t.Errorf("successful = %d, verdict = %s, want 0 and error", rep.Successful, rep.Verdict)
+	}
+}
+
+// A round whose replies were refused for another reason does not hide the
+// problems of other rounds.
+func TestSignatureReplayRefusedWithOtherProblems(t *testing.T) {
+	refused := func(probe string) Sample {
+		return Sample{Probe: probe, Response: probe400, Err: errors.New("probe: HTTP 400: tool_result content exceeds the endpoint limit")}
+	}
+	signedTurn := Sample{Probe: ProbeSignature, Response: probe.Response{HTTPStatus: 200, Turn: &probe.Turn{Signature: "c2ln", ToolCalls: []string{"call_01"}}}}
+	for name, first := range map[string][]Sample{
+		"unsigned": {{Probe: ProbeSignature, Response: probe.Response{HTTPStatus: 200, Turn: &probe.Turn{ToolCalls: []string{"call_01"}}}}},
+		"forgery accepted, own failed in transport": {signedTurn,
+			{Probe: ProbeSignatureOriginal, Response: probe.Response{HTTPStatus: 503}, Err: errors.New("probe: HTTP 503: busy")},
+			{Probe: ProbeSignatureTampered, Response: probe.Response{HTTPStatus: 200, ID: "chatcmpl-synth", Text: "Sunny."}}},
+	} {
+		samples := append(first, signedTurn, refused(ProbeSignatureOriginal), refused(ProbeSignatureTampered))
+		if f := Signature(samples, probe.ProtocolOpenAI, "gemini-3-pro"); f.Status != StatusWarn {
+			t.Errorf("%s: %s, want warn: %s", name, f.Status, f.Summary)
+		}
+	}
+}
+
+var probe400 = probe.Response{HTTPStatus: http.StatusBadRequest}
+
 func TestSignatureSkipsOtherModels(t *testing.T) {
 	s := &fakeSender{responses: func(int, probe.Request) (probe.Response, error) {
 		t.Error("sent a request")
@@ -353,7 +388,7 @@ func TestRunSignature(t *testing.T) {
 			if rep.Verdict != tt.want || sig.Check != "channel_signature" || sig.Status != tt.want {
 				t.Errorf("verdict = %s, signature = %+v, want %s", rep.Verdict, sig, tt.want)
 			}
-			if len(rep.Errors) != 0 || rep.Successful != rep.Requests {
+			if len(rep.Errors) != 0 || rep.Successful != rep.Requests-tt.extra {
 				t.Errorf("errors = %+v, successful %d of %d: rejected forgeries and the refused adaptive request are answers, not errors", rep.Errors, rep.Successful, rep.Requests)
 			}
 		})

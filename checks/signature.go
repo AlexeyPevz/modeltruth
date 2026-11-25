@@ -289,7 +289,7 @@ func Signature(samples []Sample, protocol probe.Protocol, claimedModel string) F
 	case every(ownRejected):
 		f.Status = StatusFail
 		f.Summary = fmt.Sprintf("the endpoint rejected its own %s signature in all %d round trips (HTTP %d): the signature was not issued by the channel that verifies it", label.kind, complete, ownStatus)
-	case complete > 0 && replayRefused == complete:
+	case complete > 0 && replayRefused == complete && problemRounds == replayRefused && unsigned == 0:
 		f.Status = StatusSkip
 		f.Summary = fmt.Sprintf("the endpoint does not accept the conversation sent back (HTTP %d for both signatures, the error does not name the signature)", replayStatus)
 	case problemRounds > 0:
