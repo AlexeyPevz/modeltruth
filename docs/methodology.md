@@ -247,11 +247,48 @@ on one model a 600-character prompt reported as 10 input tokens.
 
 Publishing the method lets relays special-case it. Mitigations:
 
-- layer 1 already draws its answer word per run; fingerprint prompts will be
-  generated per run from templates (ranges, counts, languages, ordering) with a
-  recorded seed, and references calibrated across variants;
+- layer 1 already draws its answer word per run; fingerprint prompts are
+  generated per run from templates with a recorded seed (below), and
+  references will be calibrated across variants;
 - cryptographic checks are not weakened by publication;
 - monitoring mode mixes probes into ordinary-looking traffic and randomizes timing.
+
+### Fingerprint templates
+
+The `fingerprint` package builds the layer 4 prompts. A spec fixes what is
+asked: the word categories (by default the 12 of the pilot: country, animal,
+colour, fruit, city, bird, gem, element, month, weekday, letter, digit) and an
+integer list (by default 200 integers from 1 to 355, ModelTrace's range). A
+64-bit seed then draws, from template version `fp1`:
+
+- the order of the categories;
+- the label of each answer line where there are several (`colour` or
+  `color`, `gem` or `gemstone`, `weekday` or `day`, `numbers` or
+  `integers`) and one of three phrasings per category ("a gemstone", "any
+  gem", "a precious or semi-precious stone");
+- one of four intros, three wordings of the line format and three of the
+  integer list;
+- whether the integer list comes before or after the words.
+
+Range and count are part of the spec, not drawn: they change the distribution
+being measured. The seed only changes the surface, which is what a relay would
+match. The same spec, seed and template version always give the same text
+(draws read Go's PCG-DXSM generator directly, not helper functions whose output may change between Go versions), and
+every generated prompt records its seed and version, so a probe can be
+compared with references of the same version and regenerated later. Any change
+to the phrase lists bumps the version; a test pins the text of one seed.
+
+The answer is read line by line as `label: answer`. Words are lowercased,
+stripped of surrounding punctuation, Markdown emphasis, list markers and a
+trailing comment ("Kyoto, Japan", "Iceland (land of fire and ice)"); synonyms
+and spellings are kept apart ("USA" and "United States", "grey" and "gray"),
+since which one a model prefers is part of its fingerprint. A letter must be
+one letter, a digit one of 0-9, other answers at most five words with at least
+one letter. The integer list may wrap over lines and ends at the next label;
+integers out of range, negative or fractional numbers are dropped. The parser
+accepts any input and reports how many words and integers it recognized out
+of how many were asked, and how many given answers it rejected, so a
+classifier can skip a sample that is too incomplete.
 
 ## Prior art
 
