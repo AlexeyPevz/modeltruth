@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -258,5 +259,73 @@ func TestLeaveOneOut(t *testing.T) {
 	}
 	if acc := LeaveOneOut(bank[:1], AllFeatures); acc.Total != 0 {
 		t.Errorf("one model: %+v", acc)
+	}
+}
+
+// handBank builds references that answer the given categories with
+// word(model, sample index, category).
+func handBank(models []string, cats []Category, word func(m string, k int, c Category) string) []Reference {
+	var bank []Reference
+	for _, m := range models {
+		ref := Reference{Model: m}
+		for k := range MinReferenceSamples {
+			f := Features{Template: TemplateVersion, Seed: uint64(k), Words: map[Category]string{}, WordsAsked: len(allCategories)}
+			for _, c := range cats {
+				if w := word(m, k, c); w != "" {
+					f.Words[c] = w
+				}
+			}
+			ref.Samples = append(ref.Samples, f)
+		}
+		bank = append(bank, ref)
+	}
+	return bank
+}
+
+func TestClassifyPairAccuracyUsesAnsweredCategories(t *testing.T) {
+	front, back := allCategories[:6], allCategories[6:]
+	// Each reference gives its own word in the front categories, which tells
+	// the models apart only by chance; the back categories separate them.
+	bank := handBank([]string{"a", "b"}, allCategories, func(m string, k int, c Category) string {
+		if slices.Contains(back, c) {
+			return "back-" + m
+		}
+		return fmt.Sprintf("front-%s-%d", m, k)
+	})
+	probe := Features{Template: TemplateVersion, Words: map[Category]string{}, WordsAsked: len(allCategories)}
+	for _, c := range front {
+		probe.Words[c] = "front-a-0"
+	}
+	c := Classify(bank, "a", probe)
+	if c.Decision != Skip || c.Scores[0].Model != "a" || c.Scores[0].Posterior < MinPosterior {
+		t.Fatalf("got %s (%s), want a skip on a confident probe the answered categories do not support", c.Decision, c.Reason)
+	}
+	probe.Words[back[0]] = "back-a"
+	probe.Words[back[1]] = "back-a"
+	if c := Classify(bank, "a", probe); c.Decision != Pass {
+		t.Fatalf("with separating categories answered: %s (%s)", c.Decision, c.Reason)
+	}
+}
+
+func TestClassifyPairAccuracyNeedsBothModels(t *testing.T) {
+	// Model a never answered the categories the probe answers, so nothing
+	// shows the bank would recognize it there.
+	front, back := allCategories[:6], allCategories[6:]
+	bank := handBank([]string{"a", "b"}, allCategories, func(m string, k int, c Category) string {
+		switch {
+		case m == "a" && slices.Contains(back, c):
+			return "back-a"
+		case m == "b":
+			return "b"
+		}
+		return ""
+	})
+	probe := Features{Template: TemplateVersion, Words: map[Category]string{}, WordsAsked: len(allCategories)}
+	for _, c := range front {
+		probe.Words[c] = "b"
+	}
+	c := Classify(bank, "a", probe)
+	if c.Decision != Skip || c.Scores[0].Model != "b" || c.Scores[0].Posterior < MinPosterior || c.Margin < MinLogMargin {
+		t.Fatalf("got %s (%s) scores %+v margin %.2f, want a skip", c.Decision, c.Reason, c.Scores, c.Margin)
 	}
 }

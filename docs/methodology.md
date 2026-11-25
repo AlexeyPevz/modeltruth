@@ -239,7 +239,10 @@ Decision rules (constants in `fingerprint/classify.go`):
   (0.85), leads the runner-up by at least `MinLogMargin` (ln 10 ≈ 2.3 nats, a
   Bayes factor of 10, "strong" on Jeffreys' scale), and leave-one-out on the
   bank restricted to it and the runner-up classifies at least
-  `MinPairAccuracy` (90%) of their references correctly.
+  `MinPairAccuracy` (90%) of their references correctly. The held-out
+  references are scored on the parts the probe was scored on and, of the
+  words, only on the categories the probe answered; references of both models
+  must be scored.
 - `fail`: another model wins on the same three conditions, the pair being the
   winner and the claimed model. The claimed model then has posterior at most
   0.15 and is at least 2.3 nats behind.

@@ -312,7 +312,7 @@ func Classify(bank []Reference, claimed string, probe Features) Classification {
 	if win == ci {
 		other = second
 	}
-	res.PairAccuracy = pairAccuracy(ps[win], ps[other], use)
+	res.PairAccuracy = pairAccuracy(ps[win], ps[other], probe, use)
 	if res.PairAccuracy < MinPairAccuracy {
 		res.Reason = fmt.Sprintf("bank does not separate %s from %s: leave-one-out accuracy %.2f", ps[win].model, ps[other].model, res.PairAccuracy)
 		return res
@@ -328,10 +328,17 @@ func Classify(bank []Reference, claimed string, probe Features) Classification {
 }
 
 // pairAccuracy is the leave-one-out accuracy of a bank holding only a and b,
-// scored on the features in use.
-func pairAccuracy(a, b *profile, use FeatureKind) float64 {
-	acc := leaveOneOut([]*profile{a, b}, use)
-	if acc.Total == 0 {
+// scored on the features in use and, of the words, only on the categories
+// the probe answered. It is 0 unless references of both models were scored.
+func pairAccuracy(a, b *profile, probe Features, use FeatureKind) float64 {
+	var cats []Category
+	for _, c := range allCategories {
+		if _, ok := probe.Words[c]; ok {
+			cats = append(cats, c)
+		}
+	}
+	acc := leaveOneOut([]*profile{a, b}, use, cats)
+	if acc.Confusion[a.model] == nil || acc.Confusion[b.model] == nil {
 		return 0
 	}
 	return float64(acc.Correct) / float64(acc.Total)
@@ -362,7 +369,7 @@ func LeaveOneOut(bank []Reference, kinds FeatureKind) Accuracy {
 		}
 	}
 	for _, t := range templates {
-		a := leaveOneOut(profiles(bank, t), kinds)
+		a := leaveOneOut(profiles(bank, t), kinds, nil)
 		acc.Correct += a.Correct
 		acc.Total += a.Total
 		for m, row := range a.Confusion {
@@ -377,7 +384,9 @@ func LeaveOneOut(bank []Reference, kinds FeatureKind) Accuracy {
 	return acc
 }
 
-func leaveOneOut(ps []*profile, kinds FeatureKind) Accuracy {
+// leaveOneOut scores each held-out sample on the words of cats only, or on
+// all its words when cats is nil.
+func leaveOneOut(ps []*profile, kinds FeatureKind, cats []Category) Accuracy {
 	acc := Accuracy{Confusion: map[string]map[string]int{}}
 	if len(ps) < 2 {
 		return acc
@@ -389,9 +398,18 @@ func leaveOneOut(ps []*profile, kinds FeatureKind) Accuracy {
 		}
 		for _, f := range p.samples {
 			p.add(f, -1)
-			use := usable(f, ps, kinds)
+			held := f
+			if cats != nil {
+				held.Words, held.WordsAsked = map[Category]string{}, len(cats)
+				for _, c := range cats {
+					if w, ok := f.Words[c]; ok {
+						held.Words[c] = w
+					}
+				}
+			}
+			use := usable(held, ps, kinds)
 			if use != 0 {
-				logs := newScorer(ps).score(f, ps, use)
+				logs := newScorer(ps).score(held, ps, use)
 				got := ""
 				best := slices.Max(logs)
 				if j := slices.Index(logs, best); slices.Index(logs[j+1:], best) < 0 {
