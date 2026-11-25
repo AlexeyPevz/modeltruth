@@ -36,8 +36,8 @@ Layers 1 and 2 and the tokenizer part of layer 3 ship. The others are in develop
 
 - **No reference, no accusation.** A tier check reports `fail` only when the
   claimed model scores low *and* another candidate wins with posterior ≥ 0.85
-  and a clear margin. "Unknown model", "not in bank", and close calls are
-  `skip`.
+  (`MinPosterior`) and a clear margin (`MinLogMargin`, see Layer 4).
+  "Unknown model", "not in bank", and close calls are `skip`.
 - **Candidates are not narrowed by the claim.** The tier classifier scores every
   model in the bank, so a Sonnet served as Opus cannot pass just by being a
   Claude.
@@ -205,6 +205,70 @@ o200k.
 
 Tiers that share a tokenizer (Opus, Sonnet, Haiku of one generation) are not
 separated; a channel that switches upstreams between requests may pass one run.
+
+## Layer 4: tier classifier
+
+The `fingerprint` package scores parsed answers (see Fingerprint templates
+below) against a bank of reference answers. It is not wired into
+`modeltruth check` until a bank exists (the bank format is a separate task).
+
+Scoring. Every model of the bank with at least `MinReferenceSamples` (5)
+references of the probe's template version is a candidate, whatever the
+claim; references of other template versions are ignored. A probe scores, for
+each candidate:
+
+- words: a multinomial log-likelihood per category with Laplace smoothing
+  (pseudo-count 1) over the words any candidate gave for it, plus one outcome
+  for words none gave; categories are treated as independent, as in the pilot.
+  A word no candidate gave is not scored: under smoothing it only favours the
+  candidates with fewer references;
+- integers: `-H / NumberTemperature`, where `H` is the Hellinger distance
+  between the probe's integers and the candidate's pooled reference integers
+  (Laplace-smoothed over every integer seen), following ModelTrace's softmax
+  over Hellinger similarity. `NumberTemperature` is 0.025, chosen on synthetic
+  banks: candidates with the same distribution differ by up to about 1 nat,
+  candidates with clearly different ones by 4 or more. It is to be recalibrated
+  by leave-one-out on the real bank.
+
+Words are scored when the answer gave at least `MinFeatureShare` (half) of the
+asked words, integers when it gave half of the asked integers and every
+candidate has reference integers. Posteriors are a softmax of the scores under
+a uniform prior.
+
+Decision rules (constants in `fingerprint/classify.go`):
+
+- `pass`: the claimed model wins with posterior at least `MinPosterior`
+  (0.85), leads the runner-up by at least `MinLogMargin` (ln 10 ≈ 2.3 nats, a
+  Bayes factor of 10, "strong" on Jeffreys' scale), and leave-one-out on the
+  bank restricted to it and the runner-up classifies at least
+  `MinPairAccuracy` (90%) of their references correctly. The held-out
+  references are scored on the parts the probe was scored on and, of the
+  words, only on the categories the probe answered; references of both models
+  must be scored.
+- `fail`: another model wins on the same three conditions, the pair being the
+  winner and the claimed model. The claimed model then has posterior at most
+  0.15 and is at least 2.3 nats behind.
+- `skip`: an empty bank; a claimed model that is not in the bank or has fewer
+  than 5 references; no other candidate; an answer with too few words and
+  integers; a winner below 0.85 or 2.3 nats; a pair the bank does not separate.
+
+Naive Bayes over 12 categories is overconfident: on synthetic banks two
+models with the same distribution reach posterior 0.9 or more from words alone
+on one probe in a few. The pair accuracy gate is what stops such a probe from
+deciding: a bank of 5–10 references per model gets about half of the
+references of two identical models wrong. The posterior threshold alone would
+not.
+
+`LeaveOneOut` classifies every reference against the rest of the bank by the
+highest score (words, integers or both), as in the pilot, and returns the
+accuracy with a confusion table; it is how the bank and `NumberTemperature`
+are evaluated.
+
+Limits: a `fail` proves the claimed model did not answer, not which model did.
+When the bank holds models it cannot separate (Sonnet 5 and Sonnet 5.5 in the
+pilot), the named winner can be any of them, and a probe from one of them
+claimed as another is skipped. A model missing from the bank can still win as
+its nearest neighbour.
 
 ## Pilot, 2026-10-26
 
