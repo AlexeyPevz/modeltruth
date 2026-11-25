@@ -53,7 +53,7 @@ func leak(r *http.Request) string {
 		}
 	}
 	return strings.Join([]string{r.Header.Get("Authorization"), r.Header.Get("x-api-key"), "http://" + r.Host + r.URL.String(),
-		"api_key=" + r.URL.Query().Get("api_key"), r.URL.Query().Get("api_key"), system, strings.Split(system, "\n")[0]}, " | ")
+		"api_key=" + r.URL.Query().Get("api_key"), r.URL.Query().Get("api_key"), system}, " | ")
 }
 
 func collect(t *testing.T, ctx context.Context, args ...string) (code int, stdout, stderr string) {
@@ -113,6 +113,22 @@ func TestRunCollectKeepsSecretsOutOfTheBank(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSecretsReplace(t *testing.T) {
+	const key = "sk-ABCDEF123456"
+	hidden := newSecrets(key, "https://relay.example/v1?token=tok-0123456789&v=1", "Reply as asked.\nnumbers:")
+	for _, tc := range []struct{ in, want string }{
+		// The query value ends where the key starts: no part of the key may stay.
+		{"tok-0123456789sk-ABCDEF123456 end", "[redacted] end"},
+		{"key sk-ABCDEF123456, host relay.example", "key [redacted], host [redacted]"},
+		{"Reply as asked.\nnumbers:", "[redacted]"},
+		{"country: iceland\nnumbers: 1, 2 v=1", "country: iceland\nnumbers: 1, 2 v=1"},
+	} {
+		if got := hidden.Replace(tc.in); got != tc.want {
+			t.Errorf("Replace(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

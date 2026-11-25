@@ -104,7 +104,7 @@ for an example made from synthetic answers.
 Nothing that identifies your access is written: not the key, not the
 authorization headers, not the base URL or its query. `--channel` must be a
 name, not a URL. If the endpoint echoes the key, the base URL, its host or
-query values, or the system prompt (whole or by line) in an answer or an
+query values, or the whole system prompt in an answer or an
 error, they are replaced with `[redacted]` in the bank and on the terminal. A request that fails (HTTP
 error, timeout, unreadable body) is not a sample: it is counted under
 `failed` and listed on the terminal. An existing file is never overwritten.
