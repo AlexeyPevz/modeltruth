@@ -1,9 +1,9 @@
 // Package fingerprint builds the prompts of the tier layer, turns answers
-// into features and scores them against reference answers. A prompt asks for "first-instinct" choices: one word for each
-// of several categories and a list of integers. Wording and order are drawn
-// from templates with a recorded seed, so a relay cannot match one fixed
-// string, while a reference and a probe made from the same template version
-// and seed are the same request.
+// into features and scores them against reference answers. A prompt asks for
+// "first-instinct" choices: one word for each of several categories and a list
+// of integers. Wording and order are drawn from templates with a recorded
+// seed, so a relay cannot match one fixed string, while a reference and a
+// probe made from the same template version and seed are the same request.
 package fingerprint
 
 import (
