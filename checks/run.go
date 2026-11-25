@@ -90,7 +90,9 @@ func runWith(ctx context.Context, s Sender, protocol probe.Protocol, claimedMode
 			rep.Errors = append(rep.Errors, SampleError{Probe: sample.Probe, HTTPStatus: sample.Response.HTTPStatus, Retries: sample.Response.Retries, Error: sample.Err.Error()})
 			continue
 		}
-		rep.Successful++
+		if sample.Probe != ProbeSignatureAdaptive {
+			rep.Successful++ // the refused adaptive request is not an error, nor a success
+		}
 	}
 	rep.Findings = []Finding{
 		HiddenPrompt(samples),
