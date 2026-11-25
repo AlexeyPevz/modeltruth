@@ -350,7 +350,7 @@ type Accuracy struct {
 // by highest log-score over all models and with the parts of the answer
 // selected by kinds, as the 2026-10-26 pilot did. Samples are only compared
 // with samples of their own template version. Samples with too few features
-// of the selected kinds are not counted.
+// of the selected kinds, and the only sample of a model, are not counted.
 func LeaveOneOut(bank []Reference, kinds FeatureKind) Accuracy {
 	acc := Accuracy{Confusion: map[string]map[string]int{}}
 	var templates []string
@@ -383,6 +383,10 @@ func leaveOneOut(ps []*profile, kinds FeatureKind) Accuracy {
 		return acc
 	}
 	for i, p := range ps {
+		// Without its only reference a model has nothing to be recognized by.
+		if len(p.samples) < 2 {
+			continue
+		}
 		for _, f := range p.samples {
 			p.add(f, -1)
 			use := usable(f, ps, kinds)

@@ -248,6 +248,11 @@ func TestLeaveOneOut(t *testing.T) {
 		t.Errorf("inseparable: %d of %d correct, confusion %v", acc.Correct, acc.Total, acc.Confusion)
 	}
 
+	single := append(synthBank(r, 8, separable, "opus", "sonnet"), synthBank(r, 1, separable, "haiku")...)
+	if acc := LeaveOneOut(single, AllFeatures); acc.Total != 16 || acc.Confusion["haiku"] != nil {
+		t.Errorf("the only sample of a model was counted: %+v", acc)
+	}
+
 	if acc := LeaveOneOut(nil, AllFeatures); acc.Total != 0 {
 		t.Errorf("empty bank: %+v", acc)
 	}
