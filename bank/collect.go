@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -95,6 +96,10 @@ func Collect(ctx context.Context, s Sender, opts CollectOptions) (*Bank, error) 
 		b.Provenance.Retries += resp.Retries
 		if ctx.Err() != nil {
 			break
+		}
+		if err == nil && strings.TrimSpace(resp.Text) == "" {
+			// An error envelope sent with HTTP 200 decodes to an empty answer.
+			err = fmt.Errorf("empty answer (HTTP %d)", resp.HTTPStatus)
 		}
 		if err != nil {
 			b.Provenance.Failed++

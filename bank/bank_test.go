@@ -189,6 +189,17 @@ func TestCollectCountsErrorsSeparately(t *testing.T) {
 	}
 }
 
+func TestCollectCountsEmptyAnswersAsFailed(t *testing.T) {
+	var seeds []uint64
+	s := senderFunc(func(ctx context.Context, req probe.Request) (probe.Response, error) {
+		return probe.Response{HTTPStatus: 200, Text: " \n"}, nil
+	})
+	b := collectSynthetic(t, context.Background(), 2, s, &seeds)
+	if len(b.Samples) != 0 || b.Provenance.Failed != 2 {
+		t.Fatalf("%d samples, %d failed; want 0 and 2", len(b.Samples), b.Provenance.Failed)
+	}
+}
+
 func TestCollectInterrupted(t *testing.T) {
 	var seeds []uint64
 	ctx, cancel := context.WithCancel(context.Background())
