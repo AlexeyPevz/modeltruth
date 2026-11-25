@@ -41,22 +41,24 @@ const (
 type categoryTemplate struct {
 	// labels are the keys the answer line may start with; the prompt uses one
 	// drawn per seed, the parser accepts all of them.
-	labels  []string
+	labels []string
+	// phrases must all admit the same answers: the seed changes the wording,
+	// never which answers fit.
 	phrases []string
 }
 
 var categoryTemplates = map[Category]categoryTemplate{
 	Country: {[]string{"country"}, []string{"a country", "any country", "a country of the world"}},
-	Animal:  {[]string{"animal"}, []string{"an animal", "any animal", "a wild animal"}},
+	Animal:  {[]string{"animal"}, []string{"an animal", "any animal", "the name of an animal"}},
 	Colour:  {[]string{"colour", "color"}, []string{"a colour", "any colour", "a single colour"}},
 	Fruit:   {[]string{"fruit"}, []string{"a fruit", "any fruit", "a kind of fruit"}},
 	City:    {[]string{"city"}, []string{"a city", "any city", "a city anywhere in the world"}},
 	Bird:    {[]string{"bird"}, []string{"a bird", "any bird", "a kind of bird"}},
 	Gem:     {[]string{"gem", "gemstone"}, []string{"a gemstone", "any gem", "a precious or semi-precious stone"}},
-	Element: {[]string{"element"}, []string{"a chemical element", "any element of the periodic table", "an element"}},
+	Element: {[]string{"element"}, []string{"a chemical element", "any element of the periodic table", "an element from the periodic table"}},
 	Month:   {[]string{"month"}, []string{"a month", "a month of the year", "any month"}},
-	Weekday: {[]string{"weekday", "day"}, []string{"a day of the week", "any weekday name", "a day from Monday to Sunday"}},
-	Letter:  {[]string{"letter"}, []string{"a letter of the English alphabet", "a single letter from A to Z", "any letter"}},
+	Weekday: {[]string{"weekday", "day"}, []string{"a day of the week", "any day of the week", "a day from Monday to Sunday"}},
+	Letter:  {[]string{"letter"}, []string{"a letter of the English alphabet", "a single letter from A to Z", "any letter from A to Z"}},
 	Digit:   {[]string{"digit"}, []string{"a digit from 0 to 9", "a single digit", "any digit"}},
 }
 
