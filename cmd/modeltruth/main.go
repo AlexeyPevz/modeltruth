@@ -6,16 +6,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 
+	"github.com/AlexeyPevz/modeltruth/bank"
 	"github.com/AlexeyPevz/modeltruth/checks"
+	"github.com/AlexeyPevz/modeltruth/fingerprint"
 	"github.com/AlexeyPevz/modeltruth/probe"
 )
 
@@ -26,11 +30,22 @@ const usageText = `modeltruth checks whether an LLM API endpoint serves the mode
 Usage:
   modeltruth check --base-url URL --model NAME [--protocol openai|anthropic]
                    [--retries N] [--max-wait D] [--json]
+  modeltruth collect --base-url URL --model NAME --channel NAME --out FILE
+                     [--samples N] [--protocol openai|anthropic] [--system-file FILE]
+                     [--max-tokens N] [--retries N] [--max-wait D]
   modeltruth version
 
 The API key is read from $MODELTRUTH_API_KEY (override with --api-key-env).
-Ctrl-C stops the run and prints the report for the requests answered so far.
+
+check: Ctrl-C stops the run and prints the report for the requests answered so far.
 Exit codes: 0 no failed checks, 1 usage error or no request succeeded, 2 at least one check failed.
+
+collect: sends N fingerprint prompts from a trusted key and writes a reference
+bank to FILE (never overwritten). --channel names where the key comes from,
+e.g. anthropic-direct; it must not be a URL. Ctrl-C stops the run and writes
+the samples collected so far.
+Exit codes: 0 all N samples written, 1 usage error, no sample or the file could
+not be written, 2 bank written with fewer samples than asked (failed requests or Ctrl-C).
 `
 
 func main() {
@@ -56,6 +71,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "check":
 		return runCheck(ctx, args[1:], stdout, stderr)
+	case "collect":
+		return runCollect(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usageText)
 		return 0
@@ -148,6 +165,145 @@ func printReport(w io.Writer, rep checks.Report) {
 				continue
 			}
 			fmt.Fprintf(w, "  %-6s %s\n", e.Probe, e.Error)
+		}
+	}
+}
+
+func runCollect(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("collect", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	baseURL := fs.String("base-url", "", "endpoint base URL of a trusted channel; not written to the bank")
+	model := fs.String("model", "", "model name to request and record")
+	channel := fs.String("channel", "", "name of the channel recorded in the bank, e.g. anthropic-direct (not a URL)")
+	out := fs.String("out", "", "bank file to create; an existing file is never overwritten")
+	samples := fs.Int("samples", 30, "how many fingerprint prompts to send")
+	protocol := fs.String("protocol", string(probe.ProtocolOpenAI), "wire protocol: openai or anthropic")
+	systemFile := fs.String("system-file", "", "file whose text is sent as the system prompt (the bank records only its length)")
+	maxTokens := fs.Int("max-tokens", bank.DefaultMaxTokens, "output limit of every request")
+	keyEnv := fs.String("api-key-env", "MODELTRUTH_API_KEY", "environment variable holding the API key")
+	timeout := fs.Duration("timeout", 2*time.Minute, "per-request timeout")
+	retries := fs.Int("retries", 2, "how many times a request is repeated after HTTP 429, 500, 502, 503, 504 or a timeout")
+	maxWait := fs.Duration("max-wait", probe.DefaultMaxWait, "longest pause before a retry; a longer Retry-After ends the retries")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	key := os.Getenv(*keyEnv)
+	switch {
+	case *baseURL == "" || *model == "" || *out == "" || *channel == "":
+		fmt.Fprintln(stderr, "--base-url, --model, --channel and --out are required")
+		return 1
+	case key == "":
+		fmt.Fprintf(stderr, "set the API key in $%s\n", *keyEnv)
+		return 1
+	case *protocol != string(probe.ProtocolOpenAI) && *protocol != string(probe.ProtocolAnthropic):
+		fmt.Fprintf(stderr, "unknown protocol %q\n", *protocol)
+		return 1
+	case *samples < 1:
+		fmt.Fprintln(stderr, "--samples must be at least 1")
+		return 1
+	case *maxTokens < 1:
+		fmt.Fprintln(stderr, "--max-tokens must be positive")
+		return 1
+	case *retries < 0:
+		fmt.Fprintln(stderr, "--retries must not be negative")
+		return 1
+	case *maxWait <= 0:
+		fmt.Fprintln(stderr, "--max-wait must be positive")
+		return 1
+	}
+	if err := bank.ValidChannel(*channel); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	var system string
+	if *systemFile != "" {
+		raw, err := os.ReadFile(*systemFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		system = string(raw)
+	}
+	// The file is created before the first paid request, so a bad path or
+	// an existing bank stops the run before it costs anything.
+	f, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	ep := probe.Endpoint{
+		BaseURL:  *baseURL,
+		APIKey:   key,
+		Model:    *model,
+		Protocol: probe.Protocol(*protocol),
+		HTTP:     &http.Client{Timeout: *timeout},
+		Retries:  *retries,
+		MaxWait:  *maxWait,
+	}
+	var failures []string
+	b, err := bank.Collect(ctx, ep, bank.CollectOptions{
+		Model:     *model,
+		Protocol:  ep.Protocol,
+		Channel:   *channel,
+		Tool:      "modeltruth " + version,
+		Samples:   *samples,
+		System:    system,
+		MaxTokens: *maxTokens,
+		Spec:      fingerprint.DefaultSpec(),
+		OnError:   func(err error) { failures = append(failures, err.Error()) },
+	})
+	if err == nil && len(b.Samples) == 0 {
+		err = errors.New("no sample collected; the bank was not written")
+	}
+	if err == nil {
+		redact(b, key, *baseURL)
+		err = b.Write(f)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	var prov bank.Provenance
+	if b != nil {
+		prov = b.Provenance
+		fmt.Fprintf(stdout, "model:    %s\nsamples:  %d of %d (%d failed, %d retries)\n", b.Model, prov.SampleCount, prov.Requested, prov.Failed, prov.Retries)
+		if prov.Interrupted {
+			fmt.Fprintln(stdout, "interrupted: the bank holds only the samples collected before the run was stopped")
+		}
+	}
+	if len(failures) > 0 {
+		fmt.Fprintln(stdout, "\nfailed requests:")
+		for _, e := range failures {
+			fmt.Fprintf(stdout, "  %s\n", e)
+		}
+	}
+	if err != nil {
+		_ = os.Remove(*out)
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "bank:     %s\n", *out)
+	if prov.SampleCount < prov.Requested {
+		return 2
+	}
+	return 0
+}
+
+// redact removes the key and the base URL from what the endpoint sent back:
+// a relay that echoes request headers or its own address must not get them
+// into a bank that is meant to be published.
+func redact(b *bank.Bank, key, baseURL string) {
+	secrets := []string{key, baseURL}
+	if u, err := url.Parse(baseURL); err == nil {
+		secrets = append(secrets, u.RawQuery, u.Host)
+	}
+	for i := range b.Samples {
+		s := &b.Samples[i]
+		for _, secret := range secrets {
+			if secret == "" {
+				continue
+			}
+			s.Answer = strings.ReplaceAll(s.Answer, secret, "[redacted]")
+			s.ResponseModel = strings.ReplaceAll(s.ResponseModel, secret, "[redacted]")
 		}
 	}
 }
