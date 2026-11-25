@@ -158,8 +158,8 @@ layer 5. Two relays are not caught:
   warns: without a signature there is nothing to send back.
 - A relay that keeps its own cache of the signatures it handed out, accepts
   those and rejects anything else passes without the vendor verifying
-  anything. It still had to obtain each signature from a real model of that
-  vendor once.
+  anything. The check cannot tell a vendor signature from a string the relay
+  made up; telling them apart is layer 5.
 
 Formats: [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking),
 [adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking),
