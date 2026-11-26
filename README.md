@@ -64,7 +64,7 @@ before the first answer), `2` at least one check failed.
 | `response_shape` | Rewritten or foreign responses | Anthropic message id format, echoed model name |
 | `stream_shape` | Streams that are not the vendor's, or billed differently | The tiny prompt sent twice with `stream: true`: Anthropic event order (`message_start` → `content_block_*` → `message_delta` → `message_stop`), OpenAI usage in the final chunk and `[DONE]`, and the same input size as without streaming |
 | `channel_signature` | A relay that is not backed by the vendor it sells | Claude thinking signatures and Gemini 3 thought signatures must round-trip: the endpoint must accept its own signature in the next turn and reject the same signature with one changed byte |
-| `tokenizer` | Another model behind the name, fabricated usage | The input-token difference that 12 fixed texts add to a base prompt must match the claimed family's tokenizer (o200k, Claude, Gemini, DeepSeek, GLM, Qwen, MiniMax) |
+| `tokenizer` | Another model behind the name, fabricated usage | The input-token difference that 12 fixed texts add to a base prompt must match the claimed family's tokenizer (o200k, Claude, Gemini, DeepSeek, GLM, Qwen, MiniMax); Claude 4.0–4.6 have no reference yet and fail only on another family's tokenizer |
 
 The first five catch the cheap tricks and tell you how the endpoint is wired.
 `channel_signature` proves that the vendor checks the reasoning signatures, so
